@@ -2,9 +2,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use windows::core::{Result, HSTRING};
-use windows::Foundation::Uri;
-use windows::Web::Http::HttpClient;
+use windows::core::Result;
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
 use crate::config::WeatherCfg;
@@ -98,6 +96,23 @@ pub fn spawn(state: Arc<Mutex<Option<Weather>>>, cfg: WeatherCfg, notify: isize)
     tx
 }
 
+fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+pub fn find_place(name: &str) -> Option<(String, f64, f64)> {
+    let url = format!(
+        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language={}&format=json",
+        encode(name.trim()),
+        if crate::i18n::en() { "en" } else { "tr" }
+    );
+    let v: serde_json::Value = serde_json::from_str(&crate::http::get(&url)?).ok()?;
+    let r = &v["results"][0];
+    Some((r["name"].as_str()?.to_string(), r["latitude"].as_f64()?, r["longitude"].as_f64()?))
+}
+
 fn fetch(cfg: &WeatherCfg) -> Result<Weather> {
     let url = format!(
         "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}\
@@ -105,9 +120,8 @@ fn fetch(cfg: &WeatherCfg) -> Result<Weather> {
          &daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1",
         cfg.latitude, cfg.longitude
     );
-    let client = HttpClient::new()?;
-    let body = client.GetStringAsync(&Uri::CreateUri(&HSTRING::from(url))?)?.get()?.to_string();
     let bad = || windows::core::Error::from(windows::Win32::Foundation::E_FAIL);
+    let body = crate::http::get(&url).ok_or_else(bad)?;
     let v: serde_json::Value = serde_json::from_str(&body).map_err(|_| bad())?;
     let cur = &v["current"];
     let num = |x: &serde_json::Value| x.as_f64().map(|f| f as f32);
@@ -132,5 +146,18 @@ mod tests {
         let w = super::fetch(&super::WeatherCfg::default());
         println!("{w:?}");
         assert!(w.is_ok());
+    }
+
+    #[test]
+    fn encodes_query() {
+        assert_eq!(super::encode("Muğla Bodrum"), "Mu%C4%9Fla%20Bodrum");
+    }
+
+    #[test]
+    #[ignore = "ağ gerektirir"]
+    fn find_place_live() {
+        let p = super::find_place("Antalya");
+        println!("{p:?}");
+        assert!(p.is_some_and(|(n, lat, _)| n == "Antalya" && (lat - 36.9).abs() < 0.2));
     }
 }

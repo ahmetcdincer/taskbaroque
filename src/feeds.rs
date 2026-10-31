@@ -4,9 +4,6 @@ use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use windows::core::HSTRING;
-use windows::Foundation::Uri;
-use windows::Web::Http::HttpClient;
 use windows::Win32::Networking::NetworkListManager::{INetworkListManager, NetworkListManager};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
@@ -144,14 +141,7 @@ pub fn spawn(state: Arc<Mutex<FeedData>>, cfg: FeedCfg, notify: isize) -> Sender
 }
 
 fn http_get(url: &str) -> Option<String> {
-    let url = url.trim();
-    let url = match url.strip_prefix("webcal://") {
-        Some(rest) => format!("https://{rest}"),
-        None => url.to_string(),
-    };
-    let client = HttpClient::new().ok()?;
-    let uri = Uri::CreateUri(&HSTRING::from(url)).ok()?;
-    Some(client.GetStringAsync(&uri).ok()?.get().ok()?.to_string())
+    crate::http::get(url)
 }
 
 const GH_QUERY: &str = "query { viewer { pullRequests(first: 8, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title url repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } } } }";

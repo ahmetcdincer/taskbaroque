@@ -1136,6 +1136,17 @@ pub fn add_ics(url: &str) {
     });
 }
 
+pub fn set_weather_place(city: &str, lat: f64, lon: f64) {
+    edit(|doc| {
+        if !doc.contains_key("weather") {
+            doc["weather"] = toml_edit::table();
+        }
+        doc["weather"]["city"] = toml_edit::value(city);
+        doc["weather"]["latitude"] = toml_edit::value((lat * 1000.0).round() / 1000.0);
+        doc["weather"]["longitude"] = toml_edit::value((lon * 1000.0).round() / 1000.0);
+    });
+}
+
 pub fn clear_ics() {
     set_value("calendar", "ics", toml_edit::Array::new());
 }

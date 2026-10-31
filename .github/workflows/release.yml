@@ -21,6 +21,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: MSYS2 (windres)
         id: msys2
@@ -69,9 +71,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $msg = git log -1 --format=%B
-          $notes = "$msg`n`n---`nCommit: ${{ github.sha }}"
-          $notes | Out-File -Encoding utf8 notes.md
+          $ver = "${{ steps.ver.outputs.version }}"
+          git fetch --tags --force --quiet
+          $prev = gh release list --limit 1 --json tagName --jq '.[0].tagName'
+          if ($prev) {
+            $log = git log "$prev..HEAD" --no-merges --pretty=format:"- %s (%h)"
+          } else {
+            $log = git log -1 --pretty=format:"- %s (%h)"
+          }
+          $lines = @("## Değişiklikler / Changes", "") + $log + @(
+            "",
+            "## Kurulum / Install",
+            "",
+            "``Taskbaroque-Setup-$ver.exe`` dosyasını indirip çalıştır. Yönetici izni gerekmez.",
+            "Download and run ``Taskbaroque-Setup-$ver.exe``. No administrator rights needed."
+          )
+          if ($prev) {
+            $lines += @("", "**Karşılaştır / Compare:** https://github.com/${{ github.repository }}/compare/$prev...v$ver")
+          }
+          $lines -join "`n" | Out-File -Encoding utf8 notes.md
           gh release create "${{ steps.ver.outputs.tag }}" `
             "dist\Taskbaroque-Setup-${{ steps.ver.outputs.version }}.exe" `
             --target "${{ github.sha }}" `

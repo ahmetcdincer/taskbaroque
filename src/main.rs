@@ -11,6 +11,7 @@ mod integrations;
 mod launcher;
 mod devices;
 mod hotkeys;
+mod http;
 mod picker;
 mod screentime;
 mod media;

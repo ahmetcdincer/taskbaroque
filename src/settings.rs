@@ -47,6 +47,7 @@ enum Id {
     IcsAdd,
     IcsClear,
     Github,
+    City,
     StartIconReset,
     ImportPins,
     BarEnabled,
@@ -83,6 +84,7 @@ enum Ctl {
     Choice(String),
     Stepper(String),
     Button(String, bool),
+    Input(String),
 }
 
 struct RowDef {
@@ -117,7 +119,11 @@ pub struct Settings {
     tracking: bool,
     logo: Option<ID2D1Bitmap>,
     monitors: usize,
+    edit: Option<String>,
+    searching: bool,
 }
+
+pub const WM_APP_PLACE: u32 = WM_APP + 21;
 
 impl Settings {
     pub fn new(ctx: &Ctx, mon: Monitor, monitors: usize) -> Result<Settings> {
@@ -144,7 +150,7 @@ impl Settings {
         }
         let surf = Surface::new(W, H, sc, &ctx.pal.font)?;
         let logo = surf.bitmap_from_bytes(include_bytes!("../assets/taskbaroque_icon.png"), 256);
-        let mut s = Settings { hwnd, surf, mon, section: 0, scroll: 0.0, content_h: 0.0, hits: Vec::new(), hover: None, tracking: false, logo, monitors };
+        let mut s = Settings { hwnd, surf, mon, section: 0, scroll: 0.0, content_h: 0.0, hits: Vec::new(), hover: None, tracking: false, logo, monitors, edit: None, searching: false };
         s.draw(ctx);
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
@@ -204,6 +210,12 @@ impl Settings {
                 row(Id::PerMonitor, l("Her ekranda kendi pencereleri", "Each screen shows its own windows"), l("Kapalıyken tüm uygulamalar her çubukta görünür", "When off, every bar shows all apps"), Ctl::Toggle(b.windows_per_monitor)),
                 row(Id::ShowMedia, l("Çalan medya", "Playing media"), l("Şarkı ya da video adı", "Song or video title"), Ctl::Toggle(b.show_media)),
                 row(Id::ShowWeather, l("Hava durumu", "Weather"), "", Ctl::Toggle(b.show_weather)),
+                row(
+                    Id::City,
+                    l("Hava durumu konumu", "Weather location"),
+                    if self.searching { l("Aranıyor…", "Searching…") } else { l("Şehri yazıp Enter'a bas", "Type a city and press Enter") },
+                    Ctl::Input(cfg.weather.city.clone()),
+                ),
                 row(Id::ShowSys, l("CPU ve RAM", "CPU and RAM"), "", Ctl::Toggle(b.show_sysinfo)),
                 row(Id::Hotkeys, l("Klavye kısayolları", "Keyboard shortcuts"), l("Win+1…9 çubuktaki uygulamaları, Alt+Boşluk başlatıcıyı açar", "Win+1…9 opens bar apps, Alt+Space opens the launcher"), Ctl::Toggle(b.hotkeys)),
                 row(Id::ShowClock, l("Saat", "Clock"), "", Ctl::Toggle(b.show_clock)),
@@ -388,6 +400,27 @@ impl Settings {
                     }
                     s.text(v, Rect::new(minus.x + 30.0, my - 15.0, 50.0, 30.0), 13.0, 600, white, Align::Center);
                 }
+                Ctl::Input(current) => {
+                    let c = Rect::new(right - 190.0, my - 15.0, 190.0, 30.0);
+                    let tr_ = Rect::new(c.x + 12.0, c.y, c.w - 24.0, c.h);
+                    match &self.edit {
+                        Some(text) => {
+                            s.fill_round(c, 8.0, white.alpha(0.12));
+                            s.stroke_round(c.inset(0.5), 7.5, 1.0, accent);
+                            s.push_clip(c);
+                            s.text(text, tr_, 12.5, 500, white, Align::Left);
+                            let cx = tr_.x + s.measure(text, 12.5, 500) + 1.0;
+                            s.fill_round(Rect::new(cx, my - 8.0, 1.5, 16.0), 0.0, white);
+                            s.pop_clip();
+                        }
+                        None => {
+                            s.fill_round(c, 8.0, white.alpha(if hov { 0.12 } else { 0.08 }));
+                            s.text(current, Rect::new(c.x + 12.0, c.y, c.w - 40.0, c.h), 12.5, 500, white, Align::Left);
+                            s.glyph('\u{E721}', Rect::new(c.x + c.w - 30.0, c.y, 24.0, c.h), 11.0, dim);
+                        }
+                    }
+                    hits.push((r, Hit::Row(rd.id)));
+                }
                 Ctl::Button(label, danger) => {
                     let bw = s.measure(label, 12.5, 600) + 32.0;
                     let b = Rect::new(right - bw, my - 15.0, bw, 30.0);
@@ -512,6 +545,12 @@ impl Settings {
                 }
                 Id::IcsClear => config::clear_ics(),
                 Id::Github => config::set_value("github", "enabled", !cfg.github.enabled),
+                Id::City => {
+                    if self.edit.is_none() && !self.searching {
+                        self.edit = Some(String::new());
+                    }
+                    return None;
+                }
                 Id::TerrainStyle => {
                     let grass = b.terrain_style == "grass";
                     let opts = vec![(l("Yol", "Road").to_string(), !grass), (l("Çimen", "Grass").to_string(), grass)];
@@ -588,7 +627,49 @@ impl Settings {
                 self.scroll = (self.scroll - delta * 60.0).clamp(0.0, max);
                 self.draw(ctx);
             }
+            WM_CHAR if self.edit.is_some() => {
+                let c = char::from_u32(wp.0 as u32).unwrap_or('\0');
+                match c {
+                    '\u{1b}' => self.edit = None,
+                    '\u{8}' => {
+                        self.edit.as_mut().map(|t| t.pop());
+                    }
+                    '\r' => {
+                        let q = self.edit.take().unwrap_or_default();
+                        if !q.trim().is_empty() {
+                            self.searching = true;
+                            let hwnd = self.hwnd.0 as isize;
+                            std::thread::spawn(move || {
+                                let found = crate::weather::find_place(&q);
+                                if let Some((name, lat, lon)) = &found {
+                                    config::set_weather_place(name, *lat, *lon);
+                                }
+                                unsafe {
+                                    let _ = PostMessageW(util::hwnd(hwnd), WM_APP_PLACE, WPARAM(found.is_some() as usize), LPARAM(0));
+                                }
+                            });
+                        }
+                    }
+                    c if !c.is_control() && self.edit.as_ref().is_some_and(|t| t.chars().count() < 40) => {
+                        self.edit.as_mut().map(|t| t.push(c));
+                    }
+                    _ => {}
+                }
+                self.draw(ctx);
+            }
+            WM_APP_PLACE => {
+                self.searching = false;
+                if wp.0 == 0 {
+                    self.draw(ctx);
+                    util::message_box(l("Bu isimde bir şehir bulunamadı.", "No city found with that name."));
+                    return Some(None);
+                }
+                return Some(Some(SettingsOut::Reload));
+            }
             WM_LBUTTONUP => {
+                if self.edit.is_some() && self.hit(lp) != Some(Hit::Row(Id::City)) {
+                    self.edit = None;
+                }
                 let out = self.hit(lp).and_then(|h| self.click(h, ctx));
                 self.draw(ctx);
                 return Some(out);
