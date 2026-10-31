@@ -157,6 +157,42 @@ pub fn process_path(h: HWND) -> Option<String> {
     pid_path(pid)
 }
 
+pub fn end_task(wins: &[HWND]) {
+    use std::os::windows::process::CommandExt;
+    let me = unsafe { GetCurrentProcessId() };
+    let mut pids: Vec<u32> = wins
+        .iter()
+        .map(|h| {
+            let mut pid = 0u32;
+            unsafe {
+                GetWindowThreadProcessId(*h, Some(&mut pid));
+            }
+            pid
+        })
+        .filter(|p| *p != 0 && *p != me)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    for pid in pids {
+        let killed = unsafe {
+            match OpenProcess(PROCESS_TERMINATE, false, pid) {
+                Ok(p) => {
+                    let ok = TerminateProcess(p, 1).is_ok();
+                    let _ = CloseHandle(p);
+                    ok
+                }
+                Err(_) => false,
+            }
+        };
+        if !killed {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .creation_flags(0x0800_0000)
+                .spawn();
+        }
+    }
+}
+
 pub fn pid_path(pid: u32) -> Option<String> {
     unsafe {
         let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;

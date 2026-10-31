@@ -31,28 +31,48 @@ pub struct Preview {
     hover: Option<usize>,
     hover_close: bool,
     pub rect: RECT,
+    thumb_h: f32,
+    anim: Option<(RECT, std::time::Instant)>,
+    alpha: u8,
+}
+
+const SLIDE_MS: f32 = 170.0;
+
+struct Layout {
+    w: f32,
+    h: f32,
+    card_w: f32,
+    card_h: f32,
+    thumb_h: f32,
+}
+
+fn layout(mon: &Monitor, n: usize) -> Layout {
+    let scale = mon.scale;
+    let n = n.max(1) as f32;
+    let avail = (mon.rect.right - mon.rect.left) as f32 / scale - 32.0;
+    let card_w = CARD_W.min((avail - PAD) / n - PAD).max(120.0);
+    let thumb_h = ((card_w - 2.0 * PAD) * 0.58).round();
+    let card_h = TITLE_H + thumb_h + PAD;
+    Layout { w: PAD + n * (card_w + PAD), h: card_h + 2.0 * PAD, card_w, card_h, thumb_h }
+}
+
+fn place(mon: &Monitor, top: bool, w_px: i32, h_px: i32, anchor_x: i32, edge_y: i32) -> RECT {
+    let gap = (10.0 * mon.scale) as i32;
+    let x = (anchor_x - w_px / 2).clamp(mon.rect.left + gap, (mon.rect.right - gap - w_px).max(mon.rect.left));
+    let y = if top { edge_y + gap } else { edge_y - gap - h_px };
+    RECT { left: x, top: y, right: x + w_px, bottom: y + h_px }
 }
 
 impl Preview {
     pub fn new(pal: &Palette, mon: &Monitor, top: bool, group: u64, wins: Vec<HWND>, anchor_x: i32, edge_y: i32) -> Result<Preview> {
-        let scale = mon.scale;
-        let n = wins.len().max(1) as f32;
-        let avail = (mon.rect.right - mon.rect.left) as f32 / scale - 32.0;
-        let card_w = CARD_W.min((avail - PAD) / n - PAD).max(120.0);
-        let thumb_h = ((card_w - 2.0 * PAD) * 0.58).round();
-        let card_h = TITLE_H + thumb_h + PAD;
-        let (w, h) = (PAD + n * (card_w + PAD), card_h + 2.0 * PAD);
-
+        let lay = layout(mon, wins.len());
         let hwnd = create_popup(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE)?;
-        let surf = Surface::new(w, h, scale, &pal.font)?;
-        let gap = (10.0 * scale) as i32;
-        let x = (anchor_x - surf.w_px / 2).clamp(mon.rect.left + gap, (mon.rect.right - gap - surf.w_px).max(mon.rect.left));
-        let y = if top { edge_y + gap } else { edge_y - gap - surf.h_px };
-        let rect = RECT { left: x, top: y, right: x + surf.w_px, bottom: y + surf.h_px };
-
-        let cards: Vec<Rect> =
-            (0..wins.len()).map(|i| Rect::new(PAD + i as f32 * (card_w + PAD), PAD, card_w, card_h)).collect();
+        let surf = Surface::new(lay.w, lay.h, mon.scale, &pal.font)?;
+        let rect = place(mon, top, surf.w_px, surf.h_px, anchor_x, edge_y);
+        let (x, y) = (rect.left, rect.top);
+        let cards = cards(&lay, wins.len());
         let icons = wins.iter().map(|h| gfx::window_icon(*h).and_then(|i| surf.bitmap_from_icon(i))).collect();
+        let thumb_h = lay.thumb_h;
         let mut p = Preview {
             hwnd,
             group,
@@ -65,6 +85,9 @@ impl Preview {
             hover: None,
             hover_close: false,
             rect,
+            thumb_h,
+            anim: None,
+            alpha: 255,
         };
         unsafe {
             let round = DWMWCP_ROUND;
@@ -79,6 +102,84 @@ impl Preview {
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
         Ok(p)
+    }
+
+    pub fn retarget(&mut self, mon: &Monitor, top: bool, group: u64, wins: Vec<HWND>, anchor_x: i32, edge_y: i32) {
+        let from = self.current_rect();
+        self.unregister_thumbs();
+        let lay = layout(mon, wins.len());
+        let size = ((lay.w * mon.scale).ceil() as i32, (lay.h * mon.scale).ceil() as i32);
+        if (self.surf.w_px, self.surf.h_px) != size || self.surf.scale != mon.scale {
+            if let Ok(s) = Surface::new(lay.w, lay.h, mon.scale, &self.pal.font) {
+                self.surf = s;
+            }
+        }
+        self.cards = cards(&lay, wins.len());
+        self.icons = wins.iter().map(|h| gfx::window_icon(*h).and_then(|i| self.surf.bitmap_from_icon(i))).collect();
+        self.group = group;
+        self.wins = wins;
+        self.hover = None;
+        self.hover_close = false;
+        self.thumb_h = lay.thumb_h;
+        self.rect = place(mon, top, self.surf.w_px, self.surf.h_px, anchor_x, edge_y);
+        let start = RECT { left: from.left + ((from.right - from.left) - self.surf.w_px) / 2, top: self.rect.top, right: 0, bottom: 0 };
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, start.left, start.top, self.surf.w_px, self.surf.h_px, SWP_NOACTIVATE);
+        }
+        self.alpha = 0;
+        self.register_thumbs(self.thumb_h);
+        self.draw();
+        self.anim = Some((start, std::time::Instant::now()));
+    }
+
+    fn current_rect(&self) -> RECT {
+        let mut r = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hwnd, &mut r);
+        }
+        r
+    }
+
+    pub fn tick(&mut self) -> bool {
+        let Some((from, t0)) = self.anim else { return false };
+        let t = (t0.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS).min(1.0);
+        let e = 1.0 - (1.0 - t).powi(3);
+        let x = from.left + ((self.rect.left - from.left) as f32 * e).round() as i32;
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, None, x, self.rect.top, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
+        }
+        let a = ((t * 1.6).min(1.0) * 255.0) as u8;
+        if a != self.alpha {
+            self.alpha = a;
+            self.set_thumb_opacity(a);
+            self.draw();
+        }
+        if t >= 1.0 {
+            self.anim = None;
+        }
+        self.anim.is_some()
+    }
+
+    fn set_thumb_opacity(&self, a: u8) {
+        for &id in &self.thumbs {
+            if id == 0 {
+                continue;
+            }
+            let props = DWM_THUMBNAIL_PROPERTIES { dwFlags: DWM_TNP_OPACITY, opacity: a, ..Default::default() };
+            unsafe {
+                let _ = DwmUpdateThumbnailProperties(id, &props);
+            }
+        }
+    }
+
+    fn unregister_thumbs(&mut self) {
+        for t in self.thumbs.drain(..) {
+            if t != 0 {
+                unsafe {
+                    let _ = DwmUnregisterThumbnail(t);
+                }
+            }
+        }
     }
 
     fn register_thumbs(&mut self, thumb_h: f32) {
@@ -107,7 +208,7 @@ impl Preview {
                     right: ((dx + dw) * sc) as i32,
                     bottom: ((dy + dh) * sc) as i32,
                 },
-                opacity: 255,
+                opacity: self.alpha,
                 fVisible: TRUE,
                 ..Default::default()
             };
@@ -121,6 +222,7 @@ impl Preview {
     fn draw(&self) {
         let s = &self.surf;
         let p = &self.pal;
+        let k = self.alpha as f32 / 255.0;
         let fg = unsafe { GetForegroundWindow() };
         s.begin();
         let base = Color::rgba(24, 24, 28, 255);
@@ -131,13 +233,16 @@ impl Preview {
         s.fill_round(full, 0.0, solid);
         s.stroke_round_grad(full.inset(0.5), 8.0, 1.0, &p.border, p.border_vertical);
         for (i, card) in self.cards.iter().enumerate() {
+            if k <= 0.0 {
+                break;
+            }
             let h = self.wins[i];
             let hovered = self.hover == Some(i);
             if hovered {
                 s.fill_round(*card, 8.0, p.text.alpha(0.08));
             }
             if h == fg {
-                s.stroke_round(card.inset(0.5), 7.5, 1.0, p.accent.alpha(0.8));
+                s.stroke_round(card.inset(0.5), 7.5, 1.0, p.accent.alpha(0.8 * k));
             }
             let title = Rect::new(card.x + PAD, card.y, card.w - 2.0 * PAD, TITLE_H);
             let mut tx = title.x;
@@ -146,7 +251,7 @@ impl Preview {
                 tx += 22.0;
             }
             let close_w = if hovered { 26.0 } else { 0.0 };
-            s.text(&window_title(h), Rect::new(tx, title.y, title.x + title.w - tx - close_w, TITLE_H), 12.0, 500, p.text, Align::Left);
+            s.text(&window_title(h), Rect::new(tx, title.y, title.x + title.w - tx - close_w, TITLE_H), 12.0, 500, p.text.alpha(p.text.a * k), Align::Left);
             if hovered {
                 let cr = self.close_rect(i);
                 if self.hover_close {
@@ -224,16 +329,16 @@ impl Preview {
 
 impl Drop for Preview {
     fn drop(&mut self) {
+        self.unregister_thumbs();
         unsafe {
-            for &t in &self.thumbs {
-                if t != 0 {
-                    let _ = DwmUnregisterThumbnail(t);
-                }
-            }
             crate::droptarget::revoke(self.hwnd);
             let _ = DestroyWindow(self.hwnd);
         }
     }
+}
+
+fn cards(lay: &Layout, n: usize) -> Vec<Rect> {
+    (0..n).map(|i| Rect::new(PAD + i as f32 * (lay.card_w + PAD), PAD, lay.card_w, lay.card_h)).collect()
 }
 
 pub fn window_title(h: HWND) -> String {

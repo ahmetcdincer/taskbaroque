@@ -540,6 +540,7 @@ impl App {
         const MIN_ALL: u32 = 7;
         const HIDE_APP: u32 = 8;
         const PIN: u32 = 9;
+        const END_TASK: u32 = 10;
         const WIN_BASE: u32 = 100;
         let Some(&first) = wins.first() else { return };
         let h = util::hwnd(first);
@@ -584,6 +585,10 @@ impl App {
             e.push(Entry::Sep);
             e.push(Entry::item(CLOSE, if i18n::en() { format!("Close all windows ({})", wins.len()) } else { format!("Tüm pencereleri kapat ({})", wins.len()) }, '\u{E8BB}'));
         }
+        let shell = path.as_deref().is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n.eq_ignore_ascii_case("explorer.exe")));
+        if !shell {
+            e.push(Entry::item(END_TASK, tr("Görevi sonlandır"), '\u{E894}'));
+        }
 
         let Some(cmd) = self.popup(e) else { return };
         if let Some(f) = cmd.checked_sub(RECENT_BASE).and_then(|i| recent.get(i as usize)) {
@@ -626,6 +631,9 @@ impl App {
                 RESTORE => {
                     let _ = ShowWindow(h, SW_RESTORE);
                     bar::bring(h);
+                }
+                END_TASK => {
+                    util::end_task(&wins.iter().map(|w| util::hwnd(*w)).collect::<Vec<_>>());
                 }
                 CLOSE => {
                     for w in &wins {

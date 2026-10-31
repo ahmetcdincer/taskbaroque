@@ -302,6 +302,15 @@ pub fn file_icon(path: &str) -> Option<HICON> {
     }
 }
 
+pub fn shell_image(path: &str, px: i32) -> Option<windows::Win32::Graphics::Gdi::HBITMAP> {
+    unsafe {
+        SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(&HSTRING::from(path), None)
+            .ok()?
+            .GetImage(SIZE { cx: px, cy: px }, SIIGBF_ICONONLY)
+            .ok()
+    }
+}
+
 pub fn drag_file(hwnd: HWND, path: &str) -> bool {
     unsafe {
         let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(path), None) else { return false };

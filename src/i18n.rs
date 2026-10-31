@@ -40,6 +40,7 @@ fn english(s: &str) -> Option<&'static str> {
         "Simge durumuna küçült" => "Minimize",
         "Ekranı kapla" => "Maximize",
         "Pencereyi kapat" => "Close window",
+        "Görevi sonlandır" => "End task",
         "Tümünü küçült" => "Minimize all",
         "Bu widget'ı gizle" => "Hide this widget",
         "Görev Yöneticisi" => "Task Manager",

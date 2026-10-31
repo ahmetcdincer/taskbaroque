@@ -483,6 +483,26 @@ impl Surface {
         }
     }
 
+    pub fn icon(&self, bmp: &ID2D1Bitmap, r: Rect) {
+        unsafe {
+            let px = bmp.GetPixelSize();
+            if px.width == 0 || px.height == 0 {
+                return;
+            }
+            let sc = self.scale;
+            let (want_w, want_h) = (r.w * sc, r.h * sc);
+            let (w, h) = if (px.width as f32 - want_w).abs() < 1.5 && (px.height as f32 - want_h).abs() < 1.5 {
+                (px.width as f32, px.height as f32)
+            } else {
+                (want_w.round(), want_h.round())
+            };
+            let x = ((r.x + r.w / 2.0) * sc - w / 2.0).round() / sc;
+            let y = ((r.y + r.h / 2.0) * sc - h / 2.0).round() / sc;
+            let dst = Rect::new(x, y, w / sc, h / sc);
+            self.rt.DrawBitmap(bmp, Some(&dst.d2d()), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+        }
+    }
+
     pub fn sprite(&self, bmp: &ID2D1Bitmap, src: Rect, dst: Rect, flip: bool, opacity: f32) {
         unsafe {
             if flip {
@@ -509,6 +529,42 @@ impl Surface {
                 WICBitmapPaletteTypeMedianCut,
             )
             .ok()?;
+            self.rt.CreateBitmapFromWicBitmap(&conv, None).ok()
+        })
+    }
+
+    pub fn bitmap_from_icon_px(&self, icon: HICON, px: u32) -> Option<ID2D1Bitmap> {
+        with_f(|f| unsafe {
+            let src = f.wic.CreateBitmapFromHICON(icon).ok()?;
+            let (mut w, mut h) = (0u32, 0u32);
+            src.GetSize(&mut w, &mut h).ok()?;
+            let conv = f.wic.CreateFormatConverter().ok()?;
+            if w > px && px > 0 {
+                let scaler = f.wic.CreateBitmapScaler().ok()?;
+                scaler.Initialize(&src, px, px, WICBitmapInterpolationModeHighQualityCubic).ok()?;
+                conv.Initialize(&scaler, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut).ok()?;
+            } else {
+                conv.Initialize(&src, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut).ok()?;
+            }
+            self.rt.CreateBitmapFromWicBitmap(&conv, None).ok()
+        })
+    }
+
+    pub fn bitmap_from_shell_image(&self, h: windows::Win32::Graphics::Gdi::HBITMAP, px: u32) -> Option<ID2D1Bitmap> {
+        with_f(|f| unsafe {
+            let src = f.wic.CreateBitmapFromHBITMAP(h, None, WICBitmapUseAlpha).ok()?;
+            let (mut w, mut hh) = (0u32, 0u32);
+            src.GetSize(&mut w, &mut hh).ok()?;
+            let conv = f.wic.CreateFormatConverter().ok()?;
+            if w != px && px > 0 {
+                let straight = f.wic.CreateFormatConverter().ok()?;
+                straight.Initialize(&src, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut).ok()?;
+                let scaler = f.wic.CreateBitmapScaler().ok()?;
+                scaler.Initialize(&straight, px, px, WICBitmapInterpolationModeHighQualityCubic).ok()?;
+                conv.Initialize(&scaler, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut).ok()?;
+            } else {
+                conv.Initialize(&src, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut).ok()?;
+            }
             self.rt.CreateBitmapFromWicBitmap(&conv, None).ok()
         })
     }

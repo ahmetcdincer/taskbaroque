@@ -8,7 +8,7 @@ use windows::core::Result;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-use windows::Win32::Graphics::Gdi::{MonitorFromWindow, HMONITOR, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{DeleteObject, MonitorFromWindow, HMONITOR, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::WindowsAndMessaging::HICON;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -40,6 +40,7 @@ const TIMER_FLYOUT: usize = 4;
 const TIMER_CAR: usize = 5;
 const TIMER_FLYOUT_CLOSE: usize = 6;
 const TIMER_DRAG: usize = 7;
+const TIMER_PREVIEW_ANIM: usize = 8;
 const DRAG_DWELL_MS: u128 = 500;
 const DESK_DOT: f32 = 12.0;
 
@@ -83,6 +84,7 @@ pub struct Bar {
     groups: Vec<Group>,
     last_active: HashMap<u64, HWND>,
     icons: HashMap<u64, Option<ID2D1Bitmap>>,
+    icon_px: i32,
     start_bmp: Option<ID2D1Bitmap>,
     tray_bmps: HashMap<u64, (u64, Option<ID2D1Bitmap>)>,
     hits: Vec<(Rect, Hit)>,
@@ -153,6 +155,7 @@ impl Bar {
             groups: Vec::new(),
             last_active: HashMap::new(),
             icons: HashMap::new(),
+            icon_px: 0,
             start_bmp: None,
             tray_bmps: HashMap::new(),
             hits: Vec::new(),
@@ -444,18 +447,45 @@ impl Bar {
         let fl = bc.floating();
         let fg = unsafe { GetForegroundWindow() };
 
+        let icon_px = {
+            let ph = if fl { bc.height.clamp(28.0, (self.band - 2.0).max(28.0)) } else { self.band };
+            let dock = bc.dock();
+            let slot = if dock { (ph - 8.0).max(16.0) } else { (ph - 10.0).max(16.0) };
+            let icon = if dock { slot - 6.0 } else { bc.icon_size.min(slot - 8.0) };
+            (icon * self.surf.scale).round().max(16.0) as i32
+        };
+        if icon_px != self.icon_px {
+            self.icon_px = icon_px;
+            self.icons.clear();
+        }
         for g in &self.groups {
             if !self.icons.contains_key(&g.id) {
-                let bmp = match (&g.pinned, g.wins.is_empty()) {
-                    (Some(p), true) => crate::system::file_icon(&resolve_app(p)).and_then(|h| {
-                        let b = self.surf.bitmap_from_icon(h);
+                let path = match (&g.pinned, g.wins.is_empty()) {
+                    (Some(p), true) => Some(resolve_app(p)),
+                    _ => g.wins.first().and_then(|h| util::process_path(*h)).filter(|p| !generic_host(p)),
+                };
+                let bmp = path
+                    .and_then(|p| {
+                        let std_px = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256].into_iter().find(|s| *s >= icon_px).unwrap_or(256);
+                        crate::system::shell_image(&p, std_px)
+                    })
+                    .and_then(|h| {
+                        let b = self.surf.bitmap_from_shell_image(h, icon_px as u32);
+                        unsafe {
+                            let _ = DeleteObject(h);
+                        }
+                        b
+                    })
+                    .or_else(|| g.wins.iter().find_map(|h| gfx::window_icon(*h)).and_then(|i| self.surf.bitmap_from_icon_px(i, icon_px as u32)))
+                    .or_else(|| {
+                        let p = g.pinned.as_deref()?;
+                        let h = crate::system::file_icon(&resolve_app(p))?;
+                        let b = self.surf.bitmap_from_icon_px(h, icon_px as u32);
                         unsafe {
                             let _ = DestroyIcon(h);
                         }
                         b
-                    }),
-                    _ => g.wins.iter().find_map(|h| gfx::window_icon(*h)).and_then(|i| self.surf.bitmap_from_icon(i)),
-                };
+                    });
                 self.icons.insert(g.id, bmp);
             }
         }
@@ -704,7 +734,7 @@ impl Bar {
             let hovered = hover == Some(Hit::App(g.id)) || self.preview.as_ref().is_some_and(|p| p.group == g.id);
             let mag = match (dock, hovered_i) {
                 _ if lifted => 1.08,
-                (true, Some(h)) if drag_id.is_none() => 1.0 + 0.35 * (1.0 - (gi as f32 - h as f32).abs() / 2.0).max(0.0),
+                (true, Some(h)) if drag_id.is_none() && h == gi => 1.15,
                 _ => 1.0,
             };
             let ms = slot * mag;
@@ -719,7 +749,7 @@ impl Bar {
             let icon = icon * mag;
             let ir = Rect::new(tr.x + (ms - icon) / 2.0, tr.y + (ms - icon) / 2.0 - if tiled { 0.0 } else { 1.5 }, icon, icon);
             match self.icons.get(&g.id).and_then(|b| b.as_ref()) {
-                Some(bmp) => s.image(bmp, ir, 0.0),
+                Some(bmp) => s.icon(bmp, ir),
                 None => {
                     s.fill_circle(ir.x + icon / 2.0, ir.y + icon / 2.0, icon / 2.0, pal.accent.alpha(0.35));
                     let name = g.wins.first().map(|h| window_title(*h)).or_else(|| g.pinned.as_deref().and_then(|p| std::path::Path::new(p).file_stem()).map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
@@ -898,7 +928,13 @@ impl Bar {
         let anchor = self.x + ((r.x + r.w / 2.0) * sc) as i32;
         let edge = if self.top { self.y + ((r.y + r.h + 6.0) * sc) as i32 } else { self.y + ((r.y - 6.0) * sc) as i32 };
         let wins = g.wins.clone();
-        self.preview = None;
+        if let Some(p) = self.preview.as_mut() {
+            p.retarget(&self.mon, self.top, id, wins, anchor, edge);
+            unsafe {
+                SetTimer(self.hwnd, TIMER_PREVIEW_ANIM, 8, None);
+            }
+            return;
+        }
         if let Ok(p) = Preview::new(&pal, &self.mon, self.top, id, wins, anchor, edge) {
             droptarget::register(p.hwnd, self.hwnd);
             self.preview = Some(p);
@@ -912,6 +948,7 @@ impl Bar {
         if self.preview.take().is_some() {
             unsafe {
                 let _ = KillTimer(self.hwnd, TIMER_PREVIEW_CHECK);
+                let _ = KillTimer(self.hwnd, TIMER_PREVIEW_ANIM);
             }
             self.sig.clear();
         }
@@ -1122,6 +1159,21 @@ impl Bar {
         true
     }
 
+    fn click_group(&mut self, id: u64) {
+        let _ = unsafe { KillTimer(self.hwnd, TIMER_PREVIEW) };
+        let n = self.group(id).map_or(0, |g| g.wins.len());
+        if n > 1 {
+            if self.preview.as_ref().is_some_and(|p| p.group == id) {
+                self.hide_preview();
+            } else {
+                self.show_preview(id);
+            }
+            return;
+        }
+        self.hide_preview();
+        self.click_app(id);
+    }
+
     fn click_app(&mut self, id: u64) {
         let Some(g) = self.group(id) else { return };
         if g.wins.is_empty() {
@@ -1294,6 +1346,13 @@ impl Bar {
                 }
             }
             WM_TIMER if wp.0 == TIMER_PREVIEW_CHECK => out.repaint = self.check_preview(),
+            WM_TIMER if wp.0 == TIMER_PREVIEW_ANIM => {
+                if !self.preview.as_mut().is_some_and(|p| p.tick()) {
+                    unsafe {
+                        let _ = KillTimer(self.hwnd, TIMER_PREVIEW_ANIM);
+                    }
+                }
+            }
             WM_LBUTTONUP if self.press.is_some() => {
                 let dragged = self.dragging;
                 let pressed = self.press.take().map(|p| p.0);
@@ -1308,8 +1367,7 @@ impl Bar {
                 if let (false, Some(id), Some(Hit::App(h))) = (dragged, pressed, self.hit_at(lp)) {
                     if id == h {
                         self.pending = None;
-                        self.hide_preview();
-                        self.click_app(id);
+                        self.click_group(id);
                     }
                 }
                 out.repaint = true;
@@ -1319,8 +1377,7 @@ impl Bar {
                 Some(Hit::Start) => util::send_win(None),
                 Some(Hit::App(id)) => {
                     self.pending = None;
-                    self.hide_preview();
-                    self.click_app(id);
+                    self.click_group(id);
                     out.repaint = true;
                 }
                 Some(Hit::Media) => out.action = Some(Action::Media(MediaCmd::Toggle)),
@@ -1453,6 +1510,14 @@ pub fn app_key(p: &str) -> String {
         Some((i, j)) => format!("{}\\app-*{}", &lower[..i], &lower[j..]),
         None => lower,
     }
+}
+
+fn generic_host(p: &str) -> bool {
+    let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    matches!(
+        name.as_str(),
+        "applicationframehost.exe" | "java.exe" | "javaw.exe" | "python.exe" | "pythonw.exe" | "rundll32.exe" | "dllhost.exe" | "mmc.exe" | "wscript.exe"
+    )
 }
 
 pub fn resolve_app(p: &str) -> String {

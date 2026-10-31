@@ -161,6 +161,8 @@ pub struct Notch {
     alert_left: f32,
     al: f32,
     al_vel: f32,
+    slim: f32,
+    covered: bool,
     shape: Rect,
     visible: bool,
 
@@ -226,6 +228,8 @@ impl Notch {
             alert_left: 0.0,
             al: 0.0,
             al_vel: 0.0,
+            slim: 0.0,
+            covered: false,
             shape: Rect::default(),
             visible: false,
             tab: Tab::Media,
@@ -271,10 +275,33 @@ impl Notch {
     }
 
     fn closed(&self) -> (f32, f32) {
-        if self.mode == "hover" {
-            (120.0, 7.0)
+        let k = self.slim.clamp(0.0, 1.0);
+        (300.0 + (120.0 - 300.0) * k, 34.0 + (7.0 - 34.0) * k)
+    }
+
+    fn slim_target(&self) -> f32 {
+        if self.mode == "hover" || self.covered {
+            1.0
         } else {
-            (300.0, 34.0)
+            0.0
+        }
+    }
+
+    fn top_covered(&self) -> bool {
+        unsafe {
+            let fg = GetForegroundWindow();
+            let mut r = RECT::default();
+            if fg.is_invalid() || fg == self.hwnd || MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) != self.mon.hmon || GetWindowRect(fg, &mut r).is_err() {
+                return false;
+            }
+            let mut cls = [0u16; 32];
+            let n = GetClassNameW(fg, &mut cls);
+            let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+            if cls == "Progman" || cls == "WorkerW" || IsIconic(fg).as_bool() {
+                return false;
+            }
+            let cx = (self.mon.rect.left + self.mon.rect.right) / 2;
+            IsZoomed(fg).as_bool() || (r.top <= self.mon.rect.top + 2 && r.left < cx && r.right > cx)
         }
     }
 
@@ -312,6 +339,11 @@ impl Notch {
         let dt = (now - self.poll_last).as_secs_f32();
         self.poll_last = now;
         let mut changed = false;
+        let covered = self.top_covered();
+        if covered != self.covered {
+            self.covered = covered;
+            changed = true;
+        }
         self.audio_age += dt;
         if self.audio_age > 5.0 {
             self.audio_age = 0.0;
@@ -405,7 +437,13 @@ impl Notch {
             self.away_for += dt;
             self.hover_for = 0.0;
         }
-        if self.hover && self.hover_for >= 0.12 {
+        let slim_t = self.slim_target();
+        self.slim += (slim_t - self.slim) * (1.0 - (-dt * 14.0).exp());
+        if (slim_t - self.slim).abs() < 0.005 {
+            self.slim = slim_t;
+        }
+        let delay = if self.covered && self.mode != "hover" { 0.45 } else { 0.12 };
+        if self.hover && self.hover_for >= delay {
             self.target = 1.0;
         } else if !self.hover && self.away_for >= 0.22 {
             self.target = 0.0;
@@ -438,6 +476,7 @@ impl Notch {
         }
 
         let animating = self.open != target
+            || self.slim != slim_t
             || self.vel != 0.0
             || self.al != al_target
             || (self.hover && target == 0.0)
@@ -447,7 +486,7 @@ impl Notch {
             || self.osd > 0.0
             || self.clip_flash.is_some()
             || busy_agent
-            || ctx.media.playing && (self.mode != "hover" || self.open > 0.0);
+            || ctx.media.playing && (self.slim < 0.5 || self.open > 0.0);
         self.set_interval(if fast {
             50
         } else if self.countdown.running {
@@ -589,6 +628,7 @@ impl Notch {
             s.text(title, Rect::new(tx, cy - 19.0, tw, 19.0), 13.0, 700, white.alpha(aa), Align::Left);
             s.text(msg, Rect::new(tx, cy, tw, 19.0), 12.0, 400, dim.alpha(aa), Align::Left);
         }
+        let ca = ca * (1.0 - self.slim * 2.5).clamp(0.0, 1.0);
         if ca > 0.0 && ch > 10.0 {
             self.draw_closed(s, ctx, x0, w, ch, ca, accent);
         }
