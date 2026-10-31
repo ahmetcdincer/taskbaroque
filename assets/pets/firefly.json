@@ -1,0 +1,42 @@
+{
+ "cell": 96,
+ "base": 6,
+ "anims": {
+  "idle": {
+   "row": 0,
+   "frames": 4
+  },
+  "walk": {
+   "row": 1,
+   "frames": 8
+  },
+  "run": {
+   "row": 2,
+   "frames": 6
+  },
+  "sleep": {
+   "row": 3,
+   "frames": 4
+  },
+  "jump": {
+   "row": 4,
+   "frames": 4
+  },
+  "happy": {
+   "row": 5,
+   "frames": 4
+  },
+  "dangle": {
+   "row": 6,
+   "frames": 4
+  },
+  "special": {
+   "row": 7,
+   "frames": 6
+  }
+ },
+ "stand": {
+  "anim": "walk",
+  "frame": 3
+ }
+}
