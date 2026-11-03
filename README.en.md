@@ -87,14 +87,95 @@ The Quick tab also shows the battery level of Bluetooth devices such as headphon
 - **Weather** (Open-Meteo, no API key needed)
 - **Media:** Cover art and controls.
 - **System monitor:** CPU, RAM, disk, network and a 60-second graph.
+- **Sticky note:** Click inside and type; it saves automatically. Yellow, pink, green, blue, purple or the theme color.
+- **To-do:** Add, check off, edit and delete tasks. Clear completed ones with one click.
+- **Currency, gold & crypto:** US dollar, euro, gold per gram, Bitcoin, Ethereum and more, with the daily change. No API key needed.
+- **Photo frame:** Shows the photos in a folder you choose, one after another.
+- **GitHub:** Your open pull requests and their CI status (via the gh CLI).
 
 Drag widgets to move them, even to another screen, and lock them in place. Their positions are saved automatically.
 
-### Pet and terrain
+### Pet
 
-A pixel-art character that wanders beside the bar: **Puppy, Fox, Hedgehog, Chameleon** or **Firefly**. Pick it up with the mouse to move it, or right-click to turn it off.
+A pixel-art character that wanders beside the bar. It walks, runs, jumps and sleeps; pick it up with the mouse or hover over it to pet it. Choose it in Settings → Pet → **Character**.
 
-The sides of the bar can show **grassy terrain** or **a road with tunnels**. Every now and then a car drives along the road, entering one tunnel and coming out of the other. The scene changes at night and in snowy weather.
+<img src="docs/images/pets-walk.gif" alt="Pets walking">
+
+**Chameleon, Firefly, Fox, Hedgehog, Puppy, Orange cat, Black cat, Grey cat** and **Wolfdog**. Each one has its own special move: the fox pounces, the hedgehog rolls into a ball, the cat stretches, the wolfdog howls…
+
+<img src="docs/images/pets-special.gif" alt="The pets' special moves">
+
+The first five pets also keep their classic drawings: turn off Settings → Pet → **Pixel art**.
+
+### Scenes
+
+The sides of the bar can show a pixel-art scene, and the pet walks on its ground. Choose one in Settings → Pet → **Ground style**. Landmarks (mosques, the Earth, a cabin…) appear only **once** and are shared between the two sides of the bar, so nothing repeats. Between 20:00 and 06:00, scenes with a night version switch to it automatically.
+
+In the images below, the top row is the **left** of the bar and the bottom row is the **right**.
+
+**Istanbul** — a ferry, Hagia Sophia, the Blue Mosque, Galata Tower, the Bosphorus Bridge
+
+<img src="docs/images/scene-istanbul.png" alt="Istanbul scene">
+
+<details><summary>Night</summary>
+
+<img src="docs/images/scene-istanbul-night.png" alt="Istanbul at night">
+</details>
+
+**Antalya** — a gulet, Düden Waterfall, Kaleiçi and the Yivli Minaret, Hadrian's Gate, Konyaaltı beach
+
+<img src="docs/images/scene-antalya.png" alt="Antalya scene">
+
+<details><summary>Night</summary>
+
+<img src="docs/images/scene-antalya-night.png" alt="Antalya at night">
+</details>
+
+**Mountains** — pine forest and deer, a snowy peak and lake, a waterfall, a log cabin, meadows
+
+<img src="docs/images/scene-mountains.png" alt="Mountain scene">
+
+<details><summary>Night</summary>
+
+<img src="docs/images/scene-mountains-night.png" alt="Mountains at night">
+</details>
+
+**Snowy village** — a lantern-lit forest, a glowing cabin, a frozen pond, the village square, a chapel
+
+<img src="docs/images/scene-winter_cozy.png" alt="Snowy village scene">
+
+**Moon** — craters, the rising Earth, a moon base, a lander and a rover
+
+<img src="docs/images/scene-moon.png" alt="Moon scene">
+
+**Space** — nebulae, a ringed planet, a space station, an asteroid field, a galaxy
+
+<img src="docs/images/scene-space.png" alt="Space scene">
+
+**Stadium** — packed stands, two goals, floodlights for the night match
+
+<img src="docs/images/scene-stadium.png" alt="Stadium scene">
+
+<details><summary>Night</summary>
+
+<img src="docs/images/scene-stadium-night.png" alt="Stadium at night">
+</details>
+
+**Road** — a road with tunnels; now and then a car drives in one tunnel and out of the other.
+
+#### Shows
+
+Some scenes play a short show now and then (every 25–70 seconds, so they stay light on the CPU):
+
+- **Moon and Space — space fight:** A warrior walks in, aliens approach from the other side, the warrior fires a laser and the hit ones explode.
+
+  <img src="docs/images/show-space.gif" alt="Space fight characters">
+
+- **Stadium — a goal attack:** A player dribbles the ball, an opponent chases, the keeper dives but misses; confetti bursts for the goal.
+
+  <img src="docs/images/show-football.gif" alt="Football characters">
+
+Turn the shows off with the **Space fight / Football match** option below the scene.
 
 ### Themes
 
@@ -104,16 +185,24 @@ The sides of the bar can show **grassy terrain** or **a road with tunnels**. Eve
 
 Taskbaroque can receive notifications from tools running in your terminal or code editor and show them in the notch. Clicking a notification brings the matching window to the front.
 
-**Claude Code:** Add these hooks to `%USERPROFILE%\.claude\settings.json`, replacing `<user>` with your user name:
+**Claude Code:** When Taskbaroque starts, it adds its Claude Code hooks to `%USERPROFILE%\.claude\settings.json` by itself. It backs the file up first and leaves other tools' hooks alone. The notch shows working, waiting and finished sessions; click a session to bring its terminal (Warp included) to the front. Claude Code reads its settings when a session starts, so restart any open sessions once.
+
+**Sounds:** Pick a sound style in Settings → **Notifications**: Chime, Soft, Bell, Retro (8-bit), Windows sounds or your own `.wav` file. Set the volume, and choose separately whether to play a sound when a task finishes, while waiting for approval and on errors.
+
+If you prefer to add them by hand, the hooks look like this (replace `<user>` with your user name):
 
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "PreToolUse":       [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "Notification":     [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "Stop":             [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }]
+    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PreToolUse":         [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PermissionRequest":  [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "Notification":       [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "StopFailure":        [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<user>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }]
   }
 }
 ```

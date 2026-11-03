@@ -23,6 +23,7 @@ use crate::media::MediaCmd;
 use crate::monitors::Monitor;
 use crate::preview::{window_title, Preview, PreviewOut};
 use crate::road::{draw_road, Car, RoadArt};
+use crate::scene::{draw_scene, SceneArt, Show};
 use crate::skin;
 use crate::tray;
 use crate::trayflyout::{Flyout, FlyoutOut};
@@ -84,6 +85,8 @@ pub struct Bar {
     groups: Vec<Group>,
     last_active: HashMap<u64, HWND>,
     icons: HashMap<u64, Option<ID2D1Bitmap>>,
+    /// grup -> (rozet ikonu, bitmap) — Discord gibi uygulamaların okunmamış rozeti
+    badges: HashMap<u64, (isize, Option<ID2D1Bitmap>)>,
     icon_px: i32,
     start_bmp: Option<ID2D1Bitmap>,
     tray_bmps: HashMap<u64, (u64, Option<ID2D1Bitmap>)>,
@@ -97,7 +100,11 @@ pub struct Bar {
     ground: Option<GroundArt>,
     road: Option<RoadArt>,
     car: Car,
+    scene: Option<SceneArt>,
+    show: Show,
     preview: Option<Preview>,
+    /// Önizleme dışında art arda geçen kontrol sayısı (kapanmadan önce kısa tolerans)
+    preview_out: u8,
     pending: Option<u64>,
     drag_over: Option<((u64, Option<isize>), Instant, bool)>,
     press: Option<(u64, f32, f32)>,
@@ -155,6 +162,7 @@ impl Bar {
             groups: Vec::new(),
             last_active: HashMap::new(),
             icons: HashMap::new(),
+            badges: HashMap::new(),
             icon_px: 0,
             start_bmp: None,
             tray_bmps: HashMap::new(),
@@ -167,8 +175,11 @@ impl Bar {
             terrain_top: None,
             ground: None,
             road: None,
+            scene: None,
+            show: Show::new(bc.show, (r.top as u32 + 7).wrapping_mul(2246822519) ^ (r.left as u32)),
             car: Car::new(bc.car, (r.left as u32).wrapping_mul(2654435761) ^ unsafe { windows::Win32::System::SystemInformation::GetTickCount() }),
             preview: None,
+            preview_out: 0,
             pending: None,
             drag_over: None,
             press: None,
@@ -187,8 +198,12 @@ impl Bar {
             bar.start_bmp = std::fs::read(&bc.start_icon).ok().and_then(|b| bar.surf.bitmap_from_bytes(&b, (64.0 * scale) as u32));
         }
         if bc.terrain && bc.floating() && !top {
-            if bc.terrain_style == "grass" {
-                bar.ground = GroundArt::load(&bar.surf);
+            // "grass" (çimen) kaldırıldı: eski ayarlar yola düşer
+            if crate::scene::is_scene(&bc.terrain_style) {
+                bar.scene = SceneArt::load(&bar.surf, &bc.terrain_style);
+                if bar.scene.is_none() {
+                    bar.ground = GroundArt::load(&bar.surf);
+                }
             } else {
                 bar.road = RoadArt::load(&bar.surf);
                 if bar.road.is_none() {
@@ -333,6 +348,7 @@ impl Bar {
             f.remove(&(fg.0 as isize));
             f.retain(|h| unsafe { IsWindow(util::hwnd(*h)).as_bool() });
         });
+        crate::taskband::prune();
         for g in &groups {
             if g.wins.contains(&fg) {
                 self.last_active.insert(g.id, fg);
@@ -430,7 +446,12 @@ impl Bar {
             } else {
                 let _ = KillTimer(self.hwnd, TIMER_ANIM);
             }
-            match self.road.as_ref().and_then(|_| self.car.timer_ms()) {
+            let timer = match (&self.road, &self.scene) {
+                (Some(_), _) => self.car.timer_ms(),
+                (None, Some(_)) => self.show.timer_ms(),
+                _ => None,
+            };
+            match timer {
                 Some(ms) => {
                     SetTimer(self.hwnd, TIMER_CAR, ms, None);
                 }
@@ -489,6 +510,22 @@ impl Bar {
                 self.icons.insert(g.id, bmp);
             }
         }
+        let badge_px = ((icon_px as f32) * 0.55).round().max(10.0) as u32;
+        let mut badges = std::mem::take(&mut self.badges);
+        badges.retain(|id, _| self.groups.iter().any(|g| g.id == *id));
+        for g in &self.groups {
+            match g.wins.iter().find_map(|h| crate::taskband::overlay(*h)) {
+                Some(icon) => {
+                    if badges.get(&g.id).map(|b| b.0) != Some(icon.0 as isize) {
+                        badges.insert(g.id, (icon.0 as isize, self.surf.bitmap_from_icon_px(icon, badge_px)));
+                    }
+                }
+                None => {
+                    badges.remove(&g.id);
+                }
+            }
+        }
+        self.badges = badges;
         let tray_icons = if bc.show_tray { tray::icons() } else { Vec::new() };
         for i in tray_icons.iter().filter(|i| i.promoted) {
             if self.tray_bmps.get(&i.id).map(|b| b.0) != Some(i.gen) {
@@ -671,6 +708,10 @@ impl Bar {
         let walk_y = match (&self.road, &self.ground, fl && !self.top && bc.terrain) {
             (Some(art), _, true) => draw_road(s, art, &mut self.car, &panels, self.w, self.overhang + self.band, ctx, self.mon.rect.left),
             (None, Some(art), true) => draw_terrain(s, art, &panels, self.w, self.overhang + self.band, ctx, self.mon.rect.left),
+            (None, None, true) => match &self.scene {
+                Some(art) => draw_scene(s, art, &mut self.show, &panels, self.w, self.overhang + self.band, ctx, self.mon.rect.left),
+                None => None,
+            },
             _ => None,
         };
 
@@ -756,6 +797,11 @@ impl Bar {
                     let letter: String = name.chars().next().unwrap_or('?').to_uppercase().collect();
                     s.text(&letter, ir, icon * 0.5, 600, pal.text, Align::Center);
                 }
+            }
+            // Uygulamanın görev çubuğu rozeti (ör. Discord okunmamış mesaj sayısı) sağ alt köşede
+            if let Some(Some(b)) = self.badges.get(&g.id).map(|b| b.1.as_ref()) {
+                let bs = icon * 0.55;
+                s.icon(b, Rect::new(ir.x + icon - bs + bs * 0.2, ir.y + icon - bs + bs * 0.15, bs, bs));
             }
             let minimized = g.wins.iter().all(|h| unsafe { IsIconic(*h).as_bool() });
             // Etkin uygulama değişince işaret yumuşakça büyüyüp renk değiştirir
@@ -944,7 +990,12 @@ impl Bar {
         }
     }
 
+    fn surf_contains(&self, c: POINT) -> bool {
+        c.y >= self.y + (self.overhang * self.surf.scale) as i32 && c.y < self.y + self.surf.h_px
+    }
+
     fn hide_preview(&mut self) {
+        self.preview_out = 0;
         if self.preview.take().is_some() {
             unsafe {
                 let _ = KillTimer(self.hwnd, TIMER_PREVIEW_CHECK);
@@ -1030,28 +1081,44 @@ impl Bar {
             let _ = GetCursorPos(&mut c);
         }
         if p.contains_screen(c) {
+            self.preview_out = 0;
             return false;
         }
         let sc = self.surf.scale;
         let (lx, ly) = ((c.x - self.x) as f32 / sc, (c.y - self.y) as f32 / sc);
-        let (top, bottom) = (p.rect.top.min(self.y), p.rect.bottom.max(self.y));
-        let between = c.x >= p.rect.left && c.x < p.rect.right && c.y >= top && c.y < bottom;
+        // İkon ile önizleme arasındaki köprü: ikisini birlikte kapsayan dikdörtgen. İmleç ikondan
+        // önizlemeye giderken çubuğun kenar boşluğundan da geçer; orada kapanmamalı.
+        let bridge = self.hits.iter().find(|(_, h)| *h == Hit::App(p.group)).is_some_and(|(r, _)| {
+            let (il, it) = (self.x + (r.x * sc) as i32, self.y + (r.y * sc) as i32);
+            let (ir, ib) = (il + (r.w * sc) as i32, it + (r.h * sc) as i32);
+            let (l, rr) = (p.rect.left.min(il), p.rect.right.max(ir));
+            let (t, b) = (p.rect.top.min(it), p.rect.bottom.max(ib));
+            c.x >= l && c.x < rr && c.y >= t && c.y < b
+        });
         match self.hit_at_logical(lx, ly) {
-            Some(Hit::App(id)) if id == p.group => false,
+            Some(Hit::App(id)) if id == p.group => {
+                self.preview_out = 0;
+                false
+            }
             Some(Hit::App(id)) => {
+                self.preview_out = 0;
                 self.show_preview(id);
                 true
             }
-            _ if between && !self.surf_contains(c) => false,
+            _ if bridge => {
+                self.preview_out = 0;
+                false
+            }
+            // Dışarıda: hemen değil, ~0.35 sn sonra kapat (anlık kaymalar affedilsin)
+            _ if self.preview_out < 2 => {
+                self.preview_out += 1;
+                false
+            }
             _ => {
                 self.hide_preview();
                 true
             }
         }
-    }
-
-    fn surf_contains(&self, c: POINT) -> bool {
-        c.y >= self.y + (self.overhang * self.surf.scale) as i32 && c.y < self.y + self.surf.h_px
     }
 
     fn drop_at(&mut self, id: u64, ins: usize) {
@@ -1163,9 +1230,9 @@ impl Bar {
         let _ = unsafe { KillTimer(self.hwnd, TIMER_PREVIEW) };
         let n = self.group(id).map_or(0, |g| g.wins.len());
         if n > 1 {
-            if self.preview.as_ref().is_some_and(|p| p.group == id) {
-                self.hide_preview();
-            } else {
+            // Birden çok pencere: her zaman seçtir. Önizleme fareyle zaten açıldıysa açık kalsın
+            // (tıklama onu kapatmasın); fare uzaklaşınca kendiliğinden kapanır.
+            if !self.preview.as_ref().is_some_and(|p| p.group == id) {
                 self.show_preview(id);
             }
             return;

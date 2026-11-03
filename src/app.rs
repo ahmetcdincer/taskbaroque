@@ -28,7 +28,6 @@ use crate::notch::{self, Notch};
 use crate::notify;
 use crate::settings::{Settings, SettingsOut, SETTINGS_WND};
 use crate::launcher::{self, Launcher, LauncherOut, LAUNCHER_WND};
-use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
 use crate::pet::{Ground, Pet};
 use crate::sysinfo::SysInfo;
 use crate::util::{self, Time, WM_APP_DATA, WM_APP_REFRESH};
@@ -44,6 +43,11 @@ const TIMER_REBUILD: usize = 2;
 const RECENT_BASE: u32 = 200;
 
 static HOST: AtomicIsize = AtomicIsize::new(0);
+
+/// Ana (gizli) pencere; arka plan işleri bitince buraya mesaj atar.
+pub fn host() -> isize {
+    HOST.load(Ordering::SeqCst)
+}
 static REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
@@ -63,6 +67,7 @@ pub struct Ctx<'a> {
 pub enum Action {
     Media(MediaCmd),
     Menu { widget: Option<usize> },
+    NotchMenu,
     PetMenu,
     AppMenu(Vec<isize>),
     TrayClick(u64, bool),
@@ -173,7 +178,7 @@ impl App {
         if !self.monitors.is_empty() {
             let i = self.cfg.notch.monitor.clamp(1, self.monitors.len()) - 1;
             let ctx = ctx!(self);
-            let notch = Notch::new(&ctx, self.monitors[i], &self.cfg.notch.mode).ok();
+            let notch = Notch::new(&ctx, self.monitors[i], &self.cfg.notch.mode, &self.cfg.notch.edge, self.cfg.notch.offset, self.cfg.notch.locked).ok();
             self.notch = notch;
         }
 
@@ -197,7 +202,8 @@ impl App {
     }
 
     fn feed_cfg(cfg: &Config) -> FeedCfg {
-        FeedCfg { ics: cfg.calendar.ics.clone(), github: cfg.github.enabled }
+        let gh_widget = cfg.widgets.iter().any(|w| w.enabled && w.kind == "github");
+        FeedCfg { ics: cfg.calendar.ics.clone(), github: cfg.github.enabled || gh_widget }
     }
 
     fn set_focus(&mut self, on: bool, minutes: Option<u32>) {
@@ -220,9 +226,7 @@ impl App {
 
     fn show_notice(&mut self, n: notify::Notice) {
         if n.sound {
-            unsafe {
-                let _ = PlaySoundW(w!("SystemNotification"), None, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
-            }
+            crate::sound::notify(&self.cfg.sound, &n.kind);
         }
         if let Some(nt) = self.notch.as_mut() {
             nt.alert(&n.title, &n.message, n.target);
@@ -320,12 +324,12 @@ impl App {
             } else if level != 0 && (self.battery_alert == 0 || level < self.battery_alert) {
                 self.battery_alert = level;
                 let msg = if i18n::en() { format!("{}% left, plug in the charger", b.percent) } else { format!("%{} kaldı, şarja tak", b.percent) };
-                self.notify(notify::Notice { title: tr("Pil azaldı").into(), message: msg, sound: true, target: 0 });
+                self.notify(notify::Notice { title: tr("Pil azaldı").into(), message: msg, sound: true, target: 0, kind: String::new() });
             }
         }
         if self.feeds.focus_until.is_some_and(|t| std::time::Instant::now() >= t) {
             self.set_focus(false, None);
-            self.show_notice(notify::Notice { title: tr("Odak bitti").into(), message: tr("Bildirimler yeniden açık").into(), sound: true, target: 0 });
+            self.show_notice(notify::Notice { title: tr("Odak bitti").into(), message: tr("Bildirimler yeniden açık").into(), sound: true, target: 0, kind: String::new() });
         }
         let now = feeds::local_now();
         let soon: Vec<(i64, String)> = self
@@ -341,7 +345,7 @@ impl App {
             self.reminded.push((start, title.clone()));
             let mins = ((start - now) as f32 / 60.0).ceil() as i64;
             let msg = if i18n::en() { format!("Starts in {mins} min") } else { format!("{mins} dk sonra başlıyor") };
-            self.notify(notify::Notice { title, message: msg, sound: true, target: 0 });
+            self.notify(notify::Notice { title, message: msg, sound: true, target: 0, kind: String::new() });
         }
         self.reminded.retain(|(s, _)| *s > now - 3600);
         let quiet = util::fullscreen_busy() || self.bars.iter().any(|b| b.fullscreen());
@@ -373,7 +377,7 @@ impl App {
             if low && !known {
                 self.bt_alerted.push(d.name.clone());
                 let msg = if i18n::en() { format!("{} is at {}%", d.name, d.percent) } else { format!("{} pili %{}", d.name, d.percent) };
-                self.notify(notify::Notice { title: tr("Cihaz pili azaldı").into(), message: msg, sound: true, target: 0 });
+                self.notify(notify::Notice { title: tr("Cihaz pili azaldı").into(), message: msg, sound: true, target: 0, kind: String::new() });
             } else if !low && d.percent > 25 && known {
                 self.bt_alerted.retain(|n| *n != d.name);
             }
@@ -401,7 +405,7 @@ impl App {
                 } else {
                     format!("Bugün {} ekran başındaydın{most}", crate::screentime::fmt_dur(total))
                 };
-                self.notify(notify::Notice { title: tr("Günün özeti").into(), message: msg, sound: false, target: 0 });
+                self.notify(notify::Notice { title: tr("Günün özeti").into(), message: msg, sound: false, target: 0, kind: String::new() });
             }
         }
         let d = crate::system::virtual_desktops();
@@ -427,7 +431,7 @@ impl App {
         for pr in changes {
             let ok = pr.ci == "SUCCESS";
             let title = if ok { tr("CI geçti") } else { tr("CI başarısız") };
-            self.notify(notify::Notice { title: title.into(), message: format!("{} #{} · {}", pr.repo, pr.number, pr.title), sound: !ok, target: 0 });
+            self.notify(notify::Notice { title: title.into(), message: format!("{} #{} · {}", pr.repo, pr.number, pr.title), sound: !ok, target: 0, kind: String::new() });
         }
     }
 
@@ -438,6 +442,7 @@ impl App {
         self.sys.update(need_net);
         taskbar::enforce();
         tray::tick();
+        crate::taskband::apply();
         if let Some(x) = self.pet.as_ref().map(|p| p.x()) {
             let mon = self.pet_ground(x).map(|(_, m)| m);
             let bar = mon.and_then(|m| self.bars.iter().find(|b| b.monitor().hmon == m.hmon));
@@ -471,6 +476,7 @@ impl App {
             }
             Action::Menu { widget } => self.menu(widget, false),
             Action::PetMenu => self.menu(None, true),
+            Action::NotchMenu => self.notch_menu(),
             Action::AppMenu(wins) => self.app_menu(wins),
             Action::TrayClick(id, right) => tray::click(id, right, cursor()),
             Action::Open(target) => unsafe {
@@ -785,6 +791,33 @@ impl App {
         self.settings = st;
     }
 
+    /// Çentiğe sağ tık: kenar seçimi ve konum kilidi
+    fn notch_menu(&mut self) {
+        const LOCK: u32 = 1;
+        const SETTINGS: u32 = 2;
+        const EDGE: u32 = 10;
+        let n = &self.cfg.notch;
+        let mut e = vec![Entry::Header(tr("Çentik ayarları").to_string())];
+        for (i, (k, v)) in config::NOTCH_EDGES.iter().enumerate() {
+            e.push(Entry::check(EDGE + i as u32, tr(v), n.edge == *k));
+        }
+        e.push(Entry::Sep);
+        e.push(Entry::check(LOCK, tr("Konumu kilitle"), n.locked));
+        e.push(Entry::item(SETTINGS, tr("Ayarlar"), '\u{E713}'));
+        match self.popup(e) {
+            Some(LOCK) => config::set_value("notch", "locked", !n.locked),
+            Some(SETTINGS) => self.open_settings(),
+            Some(id) if id >= EDGE => {
+                if let Some((k, _)) = config::NOTCH_EDGES.get((id - EDGE) as usize) {
+                    if *k != n.edge {
+                        config::set_notch_place(k, 0.5, n.monitor);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Sağ tık menüsü: kısa yollar; ayarların hepsi Ayarlar uygulamasında
     fn menu(&mut self, widget: Option<usize>, pet: bool) {
         const TASKMGR: u32 = 1;
@@ -792,7 +825,41 @@ impl App {
         const HIDE_WIDGET: u32 = 3;
         const HIDE_PET: u32 = 4;
         const EXIT: u32 = 9;
+        const PHOTO_DIR: u32 = 20;
+        const PHOTO_NEXT: u32 = 21;
+        const CLEAR_DONE: u32 = 22;
+        const REFRESH: u32 = 23;
+        const NOTE_COLOR: u32 = 30;
+        let kind = widget.and_then(|i| self.cfg.widgets.get(i)).map(|w| w.kind.clone()).unwrap_or_default();
+        let note_color = widget.and_then(|i| self.cfg.widgets.get(i)).map(|w| w.color.clone()).unwrap_or_default();
         let mut e = Vec::new();
+        match kind.as_str() {
+            "photo" => {
+                e.push(Entry::item(PHOTO_DIR, tr("Fotoğraf klasörü seç…"), '\u{E838}'));
+                e.push(Entry::item(PHOTO_NEXT, tr("Sonraki fotoğraf"), '\u{E893}'));
+                e.push(Entry::Sep);
+            }
+            "todo" => {
+                e.push(Entry::item(CLEAR_DONE, tr("Tamamlananları temizle"), '\u{E74D}'));
+                e.push(Entry::Sep);
+            }
+            "markets" => {
+                e.push(Entry::item(REFRESH, tr("Yenile"), '\u{E72C}'));
+                e.push(Entry::Sep);
+            }
+            "notes" => {
+                let names = ["Sarı", "Pembe", "Yeşil", "Mavi", "Mor", "Tema rengi"];
+                let items = crate::widgets::NOTE_COLORS
+                    .iter()
+                    .zip(names)
+                    .enumerate()
+                    .map(|(i, (k, n))| Entry::check(NOTE_COLOR + i as u32, tr(n), note_color == *k))
+                    .collect();
+                e.push(Entry::Sub { label: tr("Not rengi").to_string(), glyph: Some('\u{E790}'), items });
+                e.push(Entry::Sep);
+            }
+            _ => {}
+        }
         if widget.is_some() {
             e.push(Entry::item(HIDE_WIDGET, tr("Bu widget'ı gizle"), '\u{ED1A}'));
             e.push(Entry::Sep);
@@ -818,6 +885,29 @@ impl App {
                 config::set_pet(None);
                 self.reload();
             }
+            Some(PHOTO_DIR) => {
+                if let (Some(i), Some(dir)) = (widget, pick_folder(self.host)) {
+                    config::set_widget_value(i, "path", dir.to_string_lossy().as_ref());
+                    self.reload();
+                }
+            }
+            Some(PHOTO_NEXT) | Some(CLEAR_DONE) => {
+                if let Some(w) = widget.and_then(|i| self.widgets.iter_mut().find(|w| w.index == i)) {
+                    if kind == "todo" {
+                        w.clear_done();
+                    } else {
+                        w.next_photo();
+                    }
+                }
+                self.paint_all(false);
+            }
+            Some(REFRESH) => self.reload(),
+            Some(id) if (NOTE_COLOR..NOTE_COLOR + crate::widgets::NOTE_COLORS.len() as u32).contains(&id) => {
+                if let Some(i) = widget {
+                    config::set_widget_value(i, "color", crate::widgets::NOTE_COLORS[(id - NOTE_COLOR) as usize]);
+                    self.reload();
+                }
+            }
             Some(EXIT) => unsafe { PostQuitMessage(0) },
             _ => {}
         }
@@ -833,6 +923,7 @@ impl App {
                 tray_icon(self.host, true);
                 if !tray::own_broadcast() {
                     taskbar::enforce();
+                    crate::taskband::apply();
                     self.rebuild();
                     tray::broadcast();
                 }
@@ -904,7 +995,7 @@ impl App {
                     let color = self.picker.take().and_then(|p| p.color());
                     if let (1, Some(hex)) = (wp.0, color) {
                         crate::system::set_clipboard_text(self.host, &hex);
-                        self.show_notice(notify::Notice { title: tr("Renk kopyalandı").into(), message: hex, sound: false, target: 0 });
+                        self.show_notice(notify::Notice { title: tr("Renk kopyalandı").into(), message: hex, sound: false, target: 0, kind: String::new() });
                     }
                 }
                 WM_SETTINGCHANGE if wp.0 == 0x14 && self.cfg.general.wallpaper_accent => {
@@ -988,6 +1079,7 @@ impl App {
                         message: tr("Süre doldu").into(),
                         sound: true,
                         target: 0,
+                        kind: String::new(),
                     });
                 }
                 return Some(LRESULT(0));
@@ -1034,7 +1126,7 @@ impl App {
 
         let locked = self.cfg.general.locked;
         if let Some(i) = self.widgets.iter().position(|w| w.hwnd == hwnd) {
-            let (action, repaint) = self.widgets[i].handle(msg, lp, locked)?;
+            let (action, repaint) = self.widgets[i].handle(msg, wp, lp, locked)?;
             if repaint {
                 let ctx = ctx!(self);
                 self.widgets[i].paint(&ctx, false);
@@ -1210,6 +1302,11 @@ pub fn run() -> Result<()> {
         crate::devices::spawn(bt_state.clone(), host.0 as isize);
         crate::hotkeys::start(host);
         let _ = RegisterShellHookWindow(host);
+        // Claude Code bildirimleri için hook'ları kur/güncelle (başkalarının kayıtlarına dokunmaz)
+        if let Err(e) = crate::integrations::ensure_hooks() {
+            let _ = std::fs::write(config::dir().join("hooks-error.log"), e);
+        }
+        crate::taskband::start(host.0 as isize);
 
         let mut app = App {
             host,
@@ -1273,11 +1370,30 @@ pub fn run() -> Result<()> {
             }
         });
         feeds::restore_windows_dnd();
+        crate::taskband::stop();
         tray::stop();
         APP.with(|a| a.borrow_mut().take());
         taskbar::restore();
     }
     Ok(())
+}
+
+/// Klasör seçme penceresi.
+fn pick_folder(owner: HWND) -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
+    unsafe {
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let _ = dlg.SetOptions(dlg.GetOptions().ok()? | FOS_PICKFOLDERS);
+        let title = HSTRING::from(tr("Fotoğraf klasörü seç…"));
+        let _ = dlg.SetTitle(&title);
+        dlg.Show(owner).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as _));
+        path.map(std::path::PathBuf::from)
+    }
 }
 
 fn cursor() -> POINT {

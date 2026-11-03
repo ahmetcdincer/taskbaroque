@@ -69,8 +69,9 @@ show_sysinfo = true
 show_clock = true
 show_tray = true          # bildirim alanı (arka planda çalışan programların simgeleri)
 terrain = true            # çubuğun iki yanında pet'in dolaştığı arazi
-terrain_style = "road"    # "road" (tünelli yol) | "grass" (çimenli arazi)
+terrain_style = "road"    # "road" (tünelli yol) | "mountains" | "winter_cozy" | "istanbul" | "antalya" | "moon" | "space" | "stadium"
 car = true                # yolda dolaşan araba
+show = true               # ay ve uzay manzarasında uzaylı savaşı, stadyumda gol atağı
 hotkeys = true            # Win+1…9 çubuktaki uygulamaları açar, Alt+Boşluk başlatıcıyı açar
 start_icon = ""           # Başlat düğmesi için görsel (png/jpg/ico yolu); boşsa Windows logosu
 clock_seconds = false
@@ -81,6 +82,9 @@ hidden_apps = []
 # Ekranın üstünde ortada: ses çubukları, saat, albüm kapağı; üzerine gelince medya kontrolleri ve takvim
 mode = "always"           # "always" (her zaman) | "media" (medya çalarken) | "hover" (üzerine gelince) | "off"
 monitor = 1
+edge = "top"              # "top" (üst kenar) | "left" (sol kenar, dikey) | "right" (sağ kenar, dikey)
+offset = 0.5              # kenar boyunca konum: 0 = baş, 0.5 = orta, 1 = son
+locked = false            # true: sürükleyerek taşınamaz (boş yerinden tutup sürükleyerek yer değiştirilir)
 
 [pet]
 enabled = true
@@ -185,8 +189,9 @@ show_sysinfo = true
 show_clock = true
 show_tray = true          # notification area (icons of programs running in the background)
 terrain = true            # ground on both sides of the bar where the pet walks
-terrain_style = "road"    # "road" (road with tunnels) | "grass" (grassy ground)
+terrain_style = "road"    # "road" (road with tunnels) | "mountains" | "winter_cozy" | "istanbul" | "antalya" | "moon" | "space" | "stadium"
 car = true                # car driving on the road
+show = true               # alien fight on the moon and space scenes, a goal attack on the stadium
 hotkeys = true            # Win+1…9 opens bar apps, Alt+Space opens the launcher
 start_icon = ""           # image for the Start button (png/jpg/ico path); empty = Windows logo
 clock_seconds = false
@@ -197,6 +202,9 @@ hidden_apps = []
 # Top center of the screen: audio bars, clock, album art; on hover media controls, calendar and more
 mode = "always"           # "always" | "media" (while media plays) | "hover" (on hover) | "off"
 monitor = 1
+edge = "top"              # "top" (top edge) | "left" (left edge, vertical) | "right" (right edge, vertical)
+offset = 0.5              # position along the edge: 0 = start, 0.5 = middle, 1 = end
+locked = false            # true: can't be dragged (drag it by an empty spot to move it)
 
 [pet]
 enabled = true
@@ -253,6 +261,7 @@ pub struct Config {
     pub notch: NotchCfg,
     pub calendar: CalendarCfg,
     pub github: GithubCfg,
+    pub sound: SoundCfg,
 }
 
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
@@ -270,6 +279,31 @@ pub struct GithubCfg {
 impl Default for GithubCfg {
     fn default() -> Self {
         GithubCfg { enabled: true }
+    }
+}
+
+/// Bildirim sesleri
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct SoundCfg {
+    pub enabled: bool,
+    /// "chime" | "soft" | "bell" | "retro" | "windows" | "custom"
+    pub theme: String,
+    /// 0..1 (uygulamanın kendi sesleri için)
+    pub volume: f32,
+    /// theme = "custom" iken çalınacak .wav dosyası
+    pub file: String,
+    /// Görev bitince
+    pub done: bool,
+    /// Onay ya da yanıt beklerken
+    pub attention: bool,
+    /// Hata olunca
+    pub error: bool,
+}
+
+impl Default for SoundCfg {
+    fn default() -> Self {
+        SoundCfg { enabled: true, theme: "chime".into(), volume: 0.7, file: String::new(), done: true, attention: true, error: true }
     }
 }
 
@@ -690,6 +724,8 @@ pub struct BarCfg {
     pub terrain: bool,
     pub terrain_style: String,
     pub car: bool,
+    /// Uzay ve stadyum manzaralarındaki kısa sahneler
+    pub show: bool,
     pub hotkeys: bool,
     pub start_icon: String,
     pub clock_seconds: bool,
@@ -723,6 +759,7 @@ impl Default for BarCfg {
             terrain: true,
             terrain_style: "road".into(),
             car: true,
+            show: true,
             hotkeys: true,
             start_icon: String::new(),
             clock_seconds: false,
@@ -756,11 +793,17 @@ impl BarCfg {
 pub struct NotchCfg {
     pub mode: String,
     pub monitor: usize,
+    /// "top" | "left" | "right"
+    pub edge: String,
+    /// Kenar boyunca konum: 0 = baş (sol/üst), 0.5 = orta, 1 = son (sağ/alt)
+    pub offset: f32,
+    /// Kilitliyken sürükleyerek taşınamaz
+    pub locked: bool,
 }
 
 impl Default for NotchCfg {
     fn default() -> Self {
-        NotchCfg { mode: "always".into(), monitor: 1 }
+        NotchCfg { mode: "always".into(), monitor: 1, edge: "top".into(), offset: 0.5, locked: false }
     }
 }
 
@@ -771,20 +814,26 @@ pub struct PetCfg {
     pub kind: String,
     pub monitor: usize,
     pub size: f32,
+    /// Pixel art çizimler (kapalıyken klasik çizimler)
+    pub pixel: bool,
 }
 
 impl Default for PetCfg {
     fn default() -> Self {
-        PetCfg { enabled: true, kind: "chameleon".into(), monitor: 1, size: 1.0 }
+        PetCfg { enabled: true, kind: "chameleon".into(), monitor: 1, size: 1.0, pixel: true }
     }
 }
 
-pub const PET_KINDS: [(&str, &str); 5] = [
+pub const PET_KINDS: [(&str, &str); 9] = [
     ("chameleon", "Bukalemun"),
     ("firefly", "Ateş böceği"),
     ("fox", "Tilki"),
     ("hedgehog", "Kirpi"),
     ("puppy", "Köpek"),
+    ("cat_orange", "Turuncu kedi"),
+    ("cat_black", "Siyah kedi"),
+    ("cat_grey", "Gri kedi"),
+    ("wolfdog", "Kurt köpeği"),
 ];
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -814,11 +863,32 @@ pub struct WidgetCfg {
     pub layer: String,
     pub seconds: bool,
     pub calendar: bool,
+    /// Not: "yellow" | "pink" | "green" | "blue" | "purple" | "panel"
+    pub color: String,
+    /// Piyasalar: gösterilecekler, ör. ["USD", "EUR", "GOLD", "BTC", "ETH"]
+    pub items: Vec<String>,
+    /// Fotoğraf çerçevesi: klasör (boşsa Resimler)
+    pub path: String,
+    /// Fotoğraf çerçevesi: kaç saniyede bir değişsin
+    pub interval: u32,
 }
 
 impl Default for WidgetCfg {
     fn default() -> Self {
-        WidgetCfg { kind: String::new(), enabled: true, monitor: 1, x: 40.0, y: 40.0, layer: "desktop".into(), seconds: true, calendar: true }
+        WidgetCfg {
+            kind: String::new(),
+            enabled: true,
+            monitor: 1,
+            x: 40.0,
+            y: 40.0,
+            layer: "desktop".into(),
+            seconds: true,
+            calendar: true,
+            color: "yellow".into(),
+            items: Vec::new(),
+            path: String::new(),
+            interval: 30,
+        }
     }
 }
 
@@ -882,6 +952,10 @@ pub fn save_widget_pos(index: usize, monitor: usize, x: f32, y: f32) {
         t["x"] = toml_edit::value(x.round() as i64);
         t["y"] = toml_edit::value(y.round() as i64);
     });
+}
+
+pub fn set_widget_value(index: usize, key: &str, v: impl Into<toml_edit::Value>) {
+    edit_widget(index, |t| t[key] = toml_edit::value(v));
 }
 
 pub fn set_widget_enabled(index: usize, on: bool) {
@@ -954,6 +1028,20 @@ pub fn set_notch_mode(mode: &str) {
     });
 }
 
+pub const NOTCH_EDGES: [(&str, &str); 3] = [("top", "Üst kenar"), ("left", "Sol kenar"), ("right", "Sağ kenar")];
+
+/// Sürükle-bırak sonrası çentiğin yeni yeri (tek yazımda).
+pub fn set_notch_place(edge: &str, offset: f32, monitor: usize) {
+    edit(|doc| {
+        if !doc.contains_key("notch") {
+            doc["notch"] = toml_edit::table();
+        }
+        doc["notch"]["edge"] = toml_edit::value(edge);
+        doc["notch"]["offset"] = toml_edit::value(((offset as f64) * 1000.0).round() / 1000.0);
+        doc["notch"]["monitor"] = toml_edit::value(monitor as i64);
+    });
+}
+
 pub const NOTCH_MODES: [(&str, &str); 4] =
     [("always", "Her zaman"), ("media", "Medya çalarken"), ("hover", "Üzerine gelince"), ("off", "Kapalı")];
 
@@ -997,8 +1085,17 @@ pub fn set_bar_enabled(on: bool) {
     });
 }
 
-pub const WIDGET_KINDS: [(&str, &str); 4] =
-    [("clock", "Saat / takvim"), ("weather", "Hava durumu"), ("media", "Medya"), ("sysmon", "Sistem monitörü")];
+pub const WIDGET_KINDS: [(&str, &str); 9] = [
+    ("clock", "Saat / takvim"),
+    ("weather", "Hava durumu"),
+    ("media", "Medya"),
+    ("sysmon", "Sistem monitörü"),
+    ("notes", "Yapışkan not"),
+    ("todo", "Yapılacaklar"),
+    ("markets", "Döviz, altın ve kripto"),
+    ("photo", "Fotoğraf çerçevesi"),
+    ("github", "GitHub"),
+];
 
 pub fn widget_label(kind: &str) -> &str {
     WIDGET_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, l)| *l).unwrap_or(kind)

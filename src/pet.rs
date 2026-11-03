@@ -13,7 +13,6 @@ use crate::gfx::{Align, Color, Rect, Surface};
 use crate::monitors::Monitor;
 use crate::sprites::{self, PetSheet};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
-use crate::weather::Sky;
 
 const W: f32 = 96.0;
 const H: f32 = 96.0;
@@ -92,7 +91,7 @@ impl Pet {
             "firefly" => Kind::Firefly,
             "fox" => Kind::Fox,
             "hedgehog" => Kind::Hedgehog,
-            "puppy" => Kind::Puppy,
+            "puppy" | "cat_orange" | "cat_black" | "cat_grey" | "wolfdog" => Kind::Puppy,
             _ => Kind::Chameleon,
         };
         let size = cfg.size.clamp(0.5, 2.0);
@@ -129,7 +128,7 @@ impl Pet {
             rub: 0.0,
             last_hover: None,
         };
-        if let Some((png, meta)) = sprites::pet(&cfg.kind) {
+        if let Some((png, meta)) = sprites::pet(&cfg.kind, cfg.pixel) {
             p.sheet = p.surf.bitmap_from_bytes(png, 4096).map(|b| (b, meta));
         }
         p.draw(ctx);
@@ -435,10 +434,6 @@ impl Pet {
             }
         };
 
-        let rainy = ctx.weather.is_some_and(|w| matches!(w.sky(), Sky::Rain | Sky::Drizzle | Sky::Storm));
-        if rainy && !sleeping && a.roll.is_none() {
-            umbrella(s, p, cx + 4.0 * k * self.facing, top - 4.0 * k, k);
-        }
         if sleeping && !drawn {
             for i in 0..3 {
                 let f = (self.t * 0.6 + i as f32 / 3.0) % 1.0;
@@ -874,20 +869,6 @@ fn draw_hedgehog(s: &Surface, cx: f32, base: f32, k: f32, a: &Anim) -> f32 {
         s.fill_circle(fx + f * 3.0 * k, fy - 1.8 * k, 1.3 * k, INK);
     }
     by - r - spike
-}
-
-fn umbrella(s: &Surface, p: &Palette, x: f32, y: f32, k: f32) {
-    let r = 18.0 * k;
-    let c = opaque(shade(p.accent, 0.8));
-    let arc: Vec<(f32, f32)> = (0..=16)
-        .map(|i| {
-            let a = PI * (1.0 + i as f32 / 16.0);
-            (x + a.cos() * r, y + a.sin() * r * 0.7)
-        })
-        .collect();
-    s.fill_poly(&arc, c);
-    s.line(x, y, x, y + 16.0 * k, 1.4 * k, Color::rgba(60, 60, 70, 255));
-    s.polyline(&[(x, y + 16.0 * k), (x - 2.0 * k, y + 19.0 * k), (x - 4.0 * k, y + 17.0 * k)], 1.4 * k, Color::rgba(60, 60, 70, 255));
 }
 
 fn heart(s: &Surface, x: f32, y: f32, r: f32, c: Color) {

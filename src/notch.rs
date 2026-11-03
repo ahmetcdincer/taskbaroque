@@ -6,12 +6,12 @@ use windows::core::{w, Result, HSTRING};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Dwm::DwmFlush;
-use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
 use windows::Win32::Media::Audio::{eRender, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 use windows::Win32::System::DataExchange::AddClipboardFormatListener;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_N};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetCapture, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_N};
 use windows::Win32::UI::Shell::{DragAcceptFiles, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -40,6 +40,110 @@ const TABS_Y: f32 = 12.0;
 const CONTENT_Y: f32 = 50.0;
 const NET_SHOW: f64 = 300.0 * 1024.0;
 pub const WM_APP_FRAME: u32 = WM_APP + 9;
+
+/// Çentiğin yapıştığı ekran kenarı. Üstte yatay hap, yanlarda dikey şerit.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Edge {
+    Top,
+    Left,
+    Right,
+}
+
+impl Edge {
+    pub fn parse(s: &str) -> Edge {
+        match s {
+            "left" => Edge::Left,
+            "right" => Edge::Right,
+            _ => Edge::Top,
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Edge::Top => "top",
+            Edge::Left => "left",
+            Edge::Right => "right",
+        }
+    }
+
+    fn side(self) -> bool {
+        self != Edge::Top
+    }
+}
+
+/// Üst kenardayken hapın yüzey içindeki hizası (köşeye yaslıysa o köşe düz kalır).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Pos {
+    Left,
+    Center,
+    Right,
+}
+
+/// Yan kenardayken yüzey boyutu: açık panel (500×218) ve kapalı dikey şerit (34×300) sığmalı.
+const SW: f32 = 520.0;
+const SH: f32 = 320.0;
+/// Kapalı hâl: üstte (genişlik, yükseklik); yanlarda tersi.
+const CLOSED: (f32, f32) = (300.0, 34.0);
+const SLIM: (f32, f32) = (120.0, 7.0);
+/// Sürükleme bu kadar pikselden (fiziksel) sonra başlar; küçük kıpırdamalar tıklama sayılır.
+const DRAG_START: i32 = 6;
+
+fn dims(edge: Edge) -> (f32, f32) {
+    if edge.side() {
+        (SW, SH)
+    } else {
+        (W, H)
+    }
+}
+
+/// İmleç konumundan en yakın kenarı ve o kenar boyunca 0..1 konumu bulur.
+/// `size` hedef kenardaki pencere boyutu (fiziksel piksel).
+fn snap(mon: &Monitor, c: POINT, size: impl Fn(Edge) -> (i32, i32)) -> (Edge, f32) {
+    let r = mon.rect;
+    let wk = mon.work;
+    let (dt, dl, dr) = (c.y - r.top, c.x - r.left, r.right - c.x);
+    let edge = if dt <= dl && dt <= dr {
+        Edge::Top
+    } else if dl <= dr {
+        Edge::Left
+    } else {
+        Edge::Right
+    };
+    let frac = |v: i32, lo: i32, hi: i32| -> f32 {
+        if hi <= lo {
+            return 0.5;
+        }
+        let f = ((v - lo) as f32 / (hi - lo) as f32).clamp(0.0, 1.0);
+        // Uçlara ve ortaya mıknatıs
+        if f < 0.03 {
+            0.0
+        } else if f > 0.97 {
+            1.0
+        } else if (f - 0.5).abs() < 0.025 {
+            0.5
+        } else {
+            f
+        }
+    };
+    let (w, h) = size(edge);
+    let off = match edge {
+        Edge::Top => frac(c.x - w / 2, r.left, r.right - w),
+        _ => frac(c.y - h / 2, wk.top, wk.bottom - h),
+    };
+    (edge, off)
+}
+
+/// Pencerenin ekrandaki sol üst köşesi (fiziksel piksel).
+fn place(mon: &Monitor, edge: Edge, offset: f32, w_px: i32, h_px: i32) -> (i32, i32) {
+    let r = mon.rect;
+    let wk = mon.work;
+    let along = |lo: i32, hi: i32, size: i32| lo + (((hi - lo - size).max(0)) as f32 * offset).round() as i32;
+    match edge {
+        Edge::Top => (along(r.left, r.right, w_px), r.top),
+        Edge::Left => (r.left, along(wk.top, wk.bottom, h_px)),
+        Edge::Right => (r.right - w_px, along(wk.top, wk.bottom, h_px)),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Tab {
@@ -117,6 +221,20 @@ struct AgentSession {
     since: Instant,
     started: Instant,
     target: isize,
+    /// Claude süreci; kapanınca oturum düşer (0 = bilinmiyor)
+    pid: u32,
+}
+
+/// Süreç hâlâ çalışıyor mu?
+fn alive(pid: u32) -> bool {
+    use windows::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code).is_ok();
+        let _ = CloseHandle(h);
+        ok && code == 259 // STILL_ACTIVE
+    }
 }
 
 #[derive(Default)]
@@ -137,6 +255,12 @@ pub struct Notch {
     surf: Surface,
     mon: Monitor,
     mode: String,
+    edge: Edge,
+    offset: f32,
+    locked: bool,
+    font: String,
+    /// (basılan imleç konumu, sürükleme başladı mı)
+    drag: Option<(POINT, bool)>,
     x: i32,
     y: i32,
     open: f32,
@@ -181,6 +305,7 @@ pub struct Notch {
     mic_users: Vec<String>,
     cam_users: Vec<String>,
     privacy_age: f32,
+    alive_age: f32,
     poll_last: Instant,
     pr_urls: Vec<String>,
     scroll: usize,
@@ -192,11 +317,13 @@ pub struct Notch {
 }
 
 impl Notch {
-    pub fn new(ctx: &Ctx, mon: Monitor, mode: &str) -> Result<Notch> {
+    pub fn new(ctx: &Ctx, mon: Monitor, mode: &str, edge: &str, offset: f32, locked: bool) -> Result<Notch> {
         let hwnd = create_layered(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)?;
-        let surf = Surface::new(W, H, mon.scale, &ctx.pal.font)?;
-        let x = mon.rect.left + ((mon.rect.right - mon.rect.left) - surf.w_px) / 2;
-        let y = mon.rect.top;
+        let edge = Edge::parse(edge);
+        let (sw, sh) = dims(edge);
+        let surf = Surface::new(sw, sh, mon.scale, &ctx.pal.font)?;
+        let offset = if offset.is_finite() { offset.clamp(0.0, 1.0) } else { 0.5 };
+        let (x, y) = place(&mon, edge, offset, surf.w_px, surf.h_px);
         let mut audio = Audio::default();
         audio.refresh();
         let mut n = Notch {
@@ -204,6 +331,11 @@ impl Notch {
             surf,
             mon,
             mode: mode.to_string(),
+            edge,
+            offset,
+            locked,
+            font: ctx.pal.font.clone(),
+            drag: None,
             x,
             y,
             open: 0.0,
@@ -247,6 +379,7 @@ impl Notch {
             mic_users: Vec::new(),
             cam_users: Vec::new(),
             privacy_age: 10.0,
+            alive_age: 0.0,
             poll_last: Instant::now(),
             pr_urls: Vec::new(),
             scroll: 0,
@@ -274,9 +407,67 @@ impl Notch {
         }
     }
 
+    /// Üst kenarda: hap köşeye yaslı mı, ortada mı.
+    fn pos(&self) -> Pos {
+        match self.edge {
+            Edge::Top if self.offset <= 0.001 => Pos::Left,
+            Edge::Top if self.offset >= 0.999 => Pos::Right,
+            _ => Pos::Center,
+        }
+    }
+
+    /// (w, h) boyutundaki şeklin yüzey içindeki sol üst köşesi (DIP).
+    fn anchor(&self, w: f32, h: f32) -> (f32, f32) {
+        let (dw, dh) = dims(self.edge);
+        match self.edge {
+            Edge::Top => (
+                match self.pos() {
+                    Pos::Left => 0.0,
+                    Pos::Right => dw - w,
+                    Pos::Center => (dw - w) / 2.0,
+                },
+                0.0,
+            ),
+            Edge::Left => (0.0, (dh - h) / 2.0),
+            Edge::Right => (dw - w, (dh - h) / 2.0),
+        }
+    }
+
     fn closed(&self) -> (f32, f32) {
         let k = self.slim.clamp(0.0, 1.0);
-        (300.0 + (120.0 - 300.0) * k, 34.0 + (7.0 - 34.0) * k)
+        let (w, h) = (CLOSED.0 + (SLIM.0 - CLOSED.0) * k, CLOSED.1 + (SLIM.1 - CLOSED.1) * k);
+        if self.edge.side() {
+            (h, w)
+        } else {
+            (w, h)
+        }
+    }
+
+    fn dragging(&self) -> bool {
+        self.drag.is_some_and(|d| d.1)
+    }
+
+    /// Sürüklerken kenar/ekran değişince yüzeyi ve konumu yeniden kurar.
+    fn relocate(&mut self, mon: Monitor, edge: Edge, offset: f32) {
+        let resize = edge.side() != self.edge.side() || (mon.scale - self.mon.scale).abs() > 0.001;
+        if resize {
+            let (w, h) = dims(edge);
+            match Surface::new(w, h, mon.scale, &self.font) {
+                Ok(s) => self.surf = s,
+                Err(_) => return,
+            }
+            // Bitmap'ler eski yüzeye bağlı
+            self.art = None;
+            self.app_icons.clear();
+        }
+        self.mon = mon;
+        self.edge = edge;
+        self.offset = offset;
+        let (x, y) = place(&mon, edge, offset, self.surf.w_px, self.surf.h_px);
+        self.x = x;
+        self.y = y;
+        self.covered = false;
+        self.request_frame();
     }
 
     fn slim_target(&self) -> f32 {
@@ -300,8 +491,20 @@ impl Notch {
             if cls == "Progman" || cls == "WorkerW" || IsIconic(fg).as_bool() {
                 return false;
             }
-            let cx = (self.mon.rect.left + self.mon.rect.right) / 2;
-            IsZoomed(fg).as_bool() || (r.top <= self.mon.rect.top + 2 && r.left < cx && r.right > cx)
+            if IsZoomed(fg).as_bool() {
+                return true;
+            }
+            // Çentiğin tam boyuttaki kapalı hâlinin ekrandaki aralığı
+            let sc = self.surf.scale;
+            let (cw, ch) = if self.edge.side() { (CLOSED.1, CLOSED.0) } else { CLOSED };
+            let (ax, ay) = self.anchor(cw, ch);
+            let (nl, nt) = (self.x + (ax * sc) as i32, self.y + (ay * sc) as i32);
+            let (nr, nb) = (nl + (cw * sc) as i32, nt + (ch * sc) as i32);
+            match self.edge {
+                Edge::Top => r.top <= self.mon.rect.top + 2 && r.left < nr && r.right > nl,
+                Edge::Left => r.left <= self.mon.rect.left + 2 && r.top < nb && r.bottom > nt,
+                Edge::Right => r.right >= self.mon.rect.right - 2 && r.top < nb && r.bottom > nt,
+            }
         }
     }
 
@@ -339,6 +542,14 @@ impl Notch {
         let dt = (now - self.poll_last).as_secs_f32();
         self.poll_last = now;
         let mut changed = false;
+        // Claude süreci kapanan oturumları (sekme kapatıldı, Esc ile çıkıldı…) düşür
+        self.alive_age += dt;
+        if self.alive_age > 3.0 {
+            self.alive_age = 0.0;
+            let before = self.agents.len();
+            self.agents.retain(|a| a.pid == 0 || alive(a.pid));
+            changed |= self.agents.len() != before;
+        }
         let covered = self.top_covered();
         if covered != self.covered {
             self.covered = covered;
@@ -443,7 +654,9 @@ impl Notch {
             self.slim = slim_t;
         }
         let delay = if self.covered && self.mode != "hover" { 0.45 } else { 0.12 };
-        if self.hover && self.hover_for >= delay {
+        if self.dragging() {
+            self.target = 0.0;
+        } else if self.hover && self.hover_for >= delay {
             self.target = 1.0;
         } else if !self.hover && self.away_for >= 0.22 {
             self.target = 0.0;
@@ -522,7 +735,7 @@ impl Notch {
         let r = self.shape;
         let inside = c.x >= self.x + (r.x * sc) as i32
             && c.x < self.x + ((r.x + r.w) * sc) as i32
-            && c.y >= self.y
+            && c.y >= self.y + (r.y * sc) as i32
             && c.y < self.y + ((r.y + r.h) * sc) as i32;
         if !inside {
             self.hover = false;
@@ -559,8 +772,14 @@ impl Notch {
                     if !ev.project.is_empty() {
                         a.project = ev.project;
                     }
-                    if ev.target != 0 {
+                    // Kesin hedef (kullanıcının yazdığı pencere) her zaman kazanır; tahmin yalnızca
+                    // elimizde geçerli bir pencere yoksa kullanılır
+                    let have = a.target != 0 && unsafe { IsWindow(util::hwnd(a.target)).as_bool() };
+                    if ev.target != 0 && (ev.strong || !have) {
                         a.target = ev.target;
+                    }
+                    if ev.pid != 0 {
+                        a.pid = ev.pid;
                     }
                 }
                 None => self.agents.push(AgentSession {
@@ -571,6 +790,7 @@ impl Notch {
                     since: now,
                     started: now,
                     target: ev.target,
+                    pid: ev.pid,
                 }),
             }
         }
@@ -600,8 +820,16 @@ impl Notch {
         let a = self.al.max(0.0);
         let (cw, ch) = (cw + (ALERT.0 - cw) * a, ch + (ALERT.1 - ch) * a);
         let (w, h) = (cw + (OPEN.0 - cw) * e, ch + (OPEN.1 - ch) * e);
-        let x0 = (W - w) / 2.0;
-        let r = (h / 2.0).min(14.0 + 8.0 * e.min(1.0));
+        let (x0, y0) = self.anchor(w, h);
+        let r = (w.min(h) / 2.0).min(14.0 + 8.0 * e.min(1.0));
+        // Ekran kenarına bakan köşeler düz kalsın: şekil o kenardan dışarı taşırılır
+        let bg = match (self.edge, self.pos()) {
+            (Edge::Top, Pos::Left) => Rect::new(x0 - r - 1.0, -r, w + r + 1.0, h + r),
+            (Edge::Top, Pos::Right) => Rect::new(x0, -r, w + r + 1.0, h + r),
+            (Edge::Top, Pos::Center) => Rect::new(x0, -r, w, h + r),
+            (Edge::Left, _) => Rect::new(x0 - r - 1.0, y0, w + r + 1.0, h),
+            (Edge::Right, _) => Rect::new(x0, y0, w + r + 1.0, h),
+        };
         let white = Color::rgba(255, 255, 255, 255);
         let dim = Color::rgba(255, 255, 255, 150);
         let accent = Color { a: 1.0, ..p.accent };
@@ -612,13 +840,15 @@ impl Notch {
 
         let s = &self.surf;
         s.begin();
-        s.fill_round(Rect::new(x0, -r, w, h + r), r, Color::rgba(8, 8, 11, 255));
-        s.stroke_round(Rect::new(x0 + 0.5, -r, w - 1.0, h + r - 0.5), r, 1.0, white.alpha(0.06));
+        s.fill_round(bg, r, Color::rgba(8, 8, 11, 255));
+        // Sürüklerken kenarlık vurgu rengine döner
+        let border = if self.dragging() { accent.alpha(0.6) } else { white.alpha(0.06) };
+        s.stroke_round(bg.inset(0.5), r, 1.0, border);
 
         let ca = (1.0 - e * 3.0).clamp(0.0, 1.0) * (1.0 - a * 2.0).clamp(0.0, 1.0);
         let aa = ((a - 0.5) / 0.5).clamp(0.0, 1.0) * (1.0 - e * 3.0).clamp(0.0, 1.0);
         if let (true, Some((title, msg))) = (aa > 0.0, &self.alert) {
-            let cy = h / 2.0;
+            let cy = y0 + h / 2.0;
             let pulse = 1.0 + (self.t * 7.0).sin() * 0.06;
             let ix = x0 + 18.0 + 14.0;
             s.fill_circle(ix, cy, 15.0 * pulse, accent.alpha(aa));
@@ -629,19 +859,23 @@ impl Notch {
             s.text(msg, Rect::new(tx, cy, tw, 19.0), 12.0, 400, dim.alpha(aa), Align::Left);
         }
         let ca = ca * (1.0 - self.slim * 2.5).clamp(0.0, 1.0);
-        if ca > 0.0 && ch > 10.0 {
+        if self.edge.side() {
+            if ca > 0.0 && cw > 10.0 {
+                self.draw_closed_side(s, ctx, Rect::new(x0, y0, w, h), ca, accent);
+            }
+        } else if ca > 0.0 && ch > 10.0 {
             self.draw_closed(s, ctx, x0, w, ch, ca, accent);
         }
 
         let ea = ((e - 0.6) / 0.4).clamp(0.0, 1.0);
         let ea = ea * ea * (3.0 - 2.0 * ea);
         if ea > 0.0 {
-            s.push_clip(Rect::new(x0, 0.0, w, h));
+            s.push_clip(Rect::new(x0, y0, w, h));
             let slide = (1.0 - ea) * -8.0;
             let widths: Vec<f32> = TABS.iter().map(|(t, _, l)| if self.tab == *t { 40.0 + s.measure(tr(l), 11.5, 600) } else { 35.0 }).collect();
             let mut tx = x0 + (w - widths.iter().sum::<f32>()) / 2.0;
             for (i, (tab, g, label)) in TABS.iter().enumerate() {
-                let r = Rect::new(tx + 2.0, TABS_Y + slide, widths[i] - 4.0, 28.0);
+                let r = Rect::new(tx + 2.0, y0 + TABS_Y + slide, widths[i] - 4.0, 28.0);
                 tx += widths[i];
                 let sel = self.tab == *tab;
                 let hov = self.btn_hover == Some(Btn::Tab(*tab));
@@ -662,7 +896,7 @@ impl Notch {
                 }
                 buttons.push((r, Btn::Tab(*tab)));
             }
-            let area = Rect::new(x0 + 18.0, CONTENT_Y + slide, w - 36.0, OPEN.1 - CONTENT_Y - 14.0);
+            let area = Rect::new(x0 + 18.0, y0 + CONTENT_Y + slide, w - 36.0, OPEN.1 - CONTENT_Y - 14.0);
             match self.tab {
                 Tab::Media => self.draw_media(s, ctx, area, ea, accent, &mut buttons),
                 Tab::Agents => self.draw_agents(s, area, ea, accent, &mut buttons),
@@ -691,8 +925,87 @@ impl Notch {
         }
         s.end();
         s.present(self.hwnd, self.x, self.y);
-        self.shape = Rect::new(x0, 0.0, w, h);
+        self.shape = Rect::new(x0, y0, w, h);
         self.buttons = buttons;
+    }
+
+    /// Yan kenardaki dikey şerit: üstte durum, ortada saat (iki satır), altta ekstralar.
+    fn draw_closed_side(&self, s: &Surface, ctx: &Ctx, b: Rect, ca: f32, accent: Color) {
+        let white = Color::rgba(255, 255, 255, 255);
+        let dim = Color::rgba(255, 255, 255, 150);
+        let orange = Color::rgba(255, 159, 67, 255);
+        let t = &ctx.now;
+        let cx = b.x + b.w / 2.0;
+        let col = |y: f32, h: f32| Rect::new(b.x, y, b.w, h);
+
+        if let (true, Some((v, muted))) = (self.osd > 0.0, self.volume) {
+            let a = ca * (self.osd * 4.0).min(1.0);
+            let g = if muted || v <= 0.0 { '\u{E74F}' } else if v < 0.34 { '\u{E993}' } else if v < 0.67 { '\u{E994}' } else { '\u{E995}' };
+            s.glyph(g, col(b.y + 10.0, 24.0), 13.0, white.alpha(a));
+            let track = Rect::new(cx - 3.0, b.y + 42.0, 6.0, b.h - 84.0);
+            s.fill_round(track, 3.0, white.alpha(0.15 * a));
+            let lv = if muted { 0.0 } else { v };
+            let fh = (track.h * lv).max(6.0);
+            s.fill_round(Rect::new(track.x, track.y + track.h - fh, 6.0, fh), 3.0, accent.alpha(a));
+            s.text(&format!("{:.0}", v * 100.0), col(b.y + b.h - 34.0, 24.0), 11.0, 600, white.alpha(a), Align::Center);
+            return;
+        }
+
+        // Üst: durum göstergesi
+        let sy = b.y + 26.0;
+        let waiting = self.agents.iter().any(|a| a.state == "waiting");
+        let working = self.agents.iter().any(|a| a.state == "working");
+        if waiting {
+            let pulse = 0.55 + 0.45 * (self.t * 5.0).sin().abs();
+            s.fill_circle(cx, sy, 5.0, orange.alpha(ca * pulse));
+        } else if working {
+            spinner(s, cx, sy, 6.5, self.t, accent.alpha(ca));
+        } else if ctx.feeds.focus {
+            s.crescent(cx, sy, 6.5, accent.alpha(ca));
+        } else if ctx.media.active {
+            draw_bars(s, cx - 13.5, sy, &self.levels, 14.0, accent.alpha(ca));
+        } else if upcoming(ctx).is_some() {
+            s.fill_circle(cx, sy, 4.0, accent.alpha(ca));
+        } else {
+            s.text(&t.day.to_string(), col(sy - 12.0, 16.0), 12.0, 600, dim.alpha(ca), Align::Center);
+            s.text(&i18n::month_short(t.month), col(sy + 3.0, 13.0), 9.5, 500, dim.alpha(ca), Align::Center);
+        }
+
+        // Orta: saat
+        let my = b.y + b.h / 2.0;
+        s.text(&format!("{:02}", t.hour), col(my - 19.0, 19.0), 13.5, 700, white.alpha(ca), Align::Center);
+        s.text(&format!("{:02}", t.min), col(my, 19.0), 13.5, 600, white.alpha(ca), Align::Center);
+
+        // Alt: ekstralar (aşağıdan yukarı)
+        let mut by = b.y + b.h - 14.0;
+        if self.countdown.total > 0.0 {
+            let frac = self.countdown.left / self.countdown.total;
+            ring(s, cx, by - 8.0, 7.5, frac, 2.5, accent.alpha(ca), white.alpha(0.15 * ca));
+            let left = self.countdown.left.max(0.0) as u32;
+            let a = ca * if self.countdown.running { 1.0 } else { 0.6 };
+            s.text(&format!("{}:{:02}", left / 60, left % 60), col(by - 36.0, 14.0), 9.5, 600, white.alpha(a), Align::Center);
+            by -= 42.0;
+        } else {
+            match self.art.as_ref().and_then(|a| a.1.as_ref()) {
+                Some(bmp) if ca > 0.5 => {
+                    s.image(bmp, Rect::new(cx - 11.0, by - 22.0, 22.0, 22.0), 6.0);
+                    by -= 28.0;
+                }
+                _ => {
+                    if let Some(wt) = ctx.weather {
+                        s.text(&format!("{:.0}°", wt.temp), col(by - 16.0, 16.0), 11.5, 600, dim.alpha(ca), Align::Center);
+                        by -= 22.0;
+                    }
+                }
+            }
+        }
+        if !self.cam_users.is_empty() {
+            s.fill_circle(cx, by - 4.0, 3.5, Color::rgba(46, 204, 113, (255.0 * ca) as u8));
+            by -= 11.0;
+        }
+        if !self.mic_users.is_empty() {
+            s.fill_circle(cx, by - 4.0, 3.5, orange.alpha(ca));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -715,9 +1028,16 @@ impl Notch {
             return;
         }
 
+        // Yerleşim: ortadayken [durum | saat | ekstralar]; solda saat ekran kenarına
+        // yaslanır [saat | durum ... ekstralar]; sağda ayna [durum ... ekstralar | saat].
+        const CLOCK_W: f32 = 46.0;
+        let (clock_r, clock_al, lx, rx0) = match self.pos() {
+            Pos::Center => (Rect::new(x0, 0.0, w, ch), Align::Center, x0 + 16.0, x0 + w - 14.0),
+            Pos::Left => (Rect::new(x0 + 16.0, 0.0, CLOCK_W, ch), Align::Left, x0 + 16.0 + CLOCK_W + 10.0, x0 + w - 14.0),
+            Pos::Right => (Rect::new(x0 + w - 16.0 - CLOCK_W, 0.0, CLOCK_W, ch), Align::Right, x0 + 16.0, x0 + w - 16.0 - CLOCK_W - 10.0),
+        };
         let waiting = self.agents.iter().find(|a| a.state == "waiting");
         let working = self.agents.iter().filter(|a| a.state == "working").max_by_key(|a| a.started.elapsed());
-        let lx = x0 + 16.0;
         if let Some(_ag) = waiting {
             let pulse = 0.55 + 0.45 * (self.t * 5.0).sin().abs();
             s.fill_circle(lx + 5.0, cy, 4.5, orange.alpha(ca * pulse));
@@ -747,9 +1067,9 @@ impl Notch {
             let d = format!("{} {}", t.day, i18n::month_short(t.month));
             s.text(&d, Rect::new(lx, 0.0, 80.0, ch), 12.0, 500, dim.alpha(ca), Align::Left);
         }
-        s.text(&format!("{:02}:{:02}", t.hour, t.min), Rect::new(x0, 0.0, w, ch), 13.5, 600, white.alpha(ca), Align::Center);
+        s.text(&format!("{:02}:{:02}", t.hour, t.min), clock_r, 13.5, 600, white.alpha(ca), clock_al);
 
-        let mut rx = x0 + w - 14.0;
+        let mut rx = rx0;
         if !self.mic_users.is_empty() {
             s.fill_circle(rx - 3.0, cy, 3.5, orange.alpha(ca));
             rx -= 11.0;
@@ -1117,6 +1437,22 @@ impl Notch {
         self.request_frame();
     }
 
+    /// Sürüklemeyi bitirir; `save` ise yeni yeri ayarlara yazar (ayarlar yeniden yüklenince
+    /// çentik aynı yerde yeniden kurulur).
+    fn end_drag(&mut self, save: bool) {
+        let Some((_, active)) = self.drag.take() else { return };
+        unsafe {
+            if GetCapture() == self.hwnd {
+                let _ = ReleaseCapture();
+            }
+        }
+        if active && save {
+            let idx = crate::monitors::list().iter().position(|m| m.hmon == self.mon.hmon).unwrap_or(0) + 1;
+            crate::config::set_notch_place(self.edge.key(), self.offset, idx);
+        }
+        self.request_frame();
+    }
+
     fn button_at(&self, lp: LPARAM) -> Option<Btn> {
         let x = (lp.0 & 0xFFFF) as i16 as f32 / self.surf.scale;
         let y = ((lp.0 >> 16) & 0xFFFF) as i16 as f32 / self.surf.scale;
@@ -1254,6 +1590,34 @@ impl Notch {
                     }
                     self.tracking = true;
                 }
+                if let Some((start, active)) = self.drag {
+                    let mut c = POINT::default();
+                    unsafe {
+                        let _ = GetCursorPos(&mut c);
+                    }
+                    let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } as u16 & 0x8000 != 0;
+                    if !down {
+                        self.end_drag(false);
+                    } else if active || (c.x - start.x).abs() + (c.y - start.y).abs() > DRAG_START {
+                        self.drag = Some((start, true));
+                        self.alert = None;
+                        unsafe {
+                            if let Ok(cur) = LoadCursorW(None, IDC_SIZEALL) {
+                                SetCursor(cur);
+                            }
+                        }
+                        let hm = unsafe { MonitorFromPoint(c, MONITOR_DEFAULTTONEAREST) };
+                        let mon = crate::monitors::list().into_iter().find(|m| m.hmon == hm).unwrap_or(self.mon);
+                        let (edge, off) = snap(&mon, c, |e| {
+                            let (w, h) = dims(e);
+                            ((w * mon.scale).round() as i32, (h * mon.scale).round() as i32)
+                        });
+                        if edge != self.edge || (off - self.offset).abs() > 0.0005 || mon.hmon != self.mon.hmon {
+                            self.relocate(mon, edge, off);
+                        }
+                        return Some(None);
+                    }
+                }
                 self.hover = true;
                 self.btn_hover = self.button_at(lp);
                 if self.mix_drag.is_some() {
@@ -1294,12 +1658,32 @@ impl Notch {
                     let _ = GetCursorPos(&mut c);
                 }
                 self.press = self.button_at(lp).map(|b| (b, c));
+                if self.press.is_none() && !self.locked {
+                    // Boş bir yerden tutuldu: sürüklenmeye hazır
+                    self.drag = Some((c, false));
+                    unsafe {
+                        SetCapture(self.hwnd);
+                    }
+                }
                 if let Some(Btn::MixSlider(i)) = self.press.map(|p| p.0) {
                     self.mix_drag = Some(i);
                     self.mix_set(lp);
                 }
             }
+            WM_LBUTTONUP if self.dragging() => {
+                self.end_drag(true);
+                return Some(None);
+            }
+            WM_CAPTURECHANGED if self.drag.is_some() => {
+                let save = self.dragging();
+                self.end_drag(save);
+            }
             WM_LBUTTONUP => {
+                if self.drag.take().is_some() {
+                    unsafe {
+                        let _ = ReleaseCapture();
+                    }
+                }
                 self.mix_drag = None;
                 let pressed = self.press.take().map(|p| p.0);
                 let b = self.button_at(lp);
@@ -1363,7 +1747,7 @@ impl Notch {
                     }
                 }
             }
-            WM_RBUTTONUP => return Some(Some(Action::Menu { widget: None })),
+            WM_RBUTTONUP => return Some(Some(Action::NotchMenu)),
             _ => return None,
         }
         Some(None)

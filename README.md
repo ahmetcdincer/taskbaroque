@@ -87,14 +87,95 @@ Bluetooth kulaklık ve fare gibi cihazların pil seviyesi de Hızlı sekmesinde 
 - **Hava durumu** (Open-Meteo, API anahtarı gerekmez)
 - **Medya:** Kapak resmi ve kontroller.
 - **Sistem monitörü:** CPU, RAM, disk, ağ ve 60 saniyelik grafik.
+- **Yapışkan not:** İçine tıklayıp yaz, otomatik kaydedilir. Sarı, pembe, yeşil, mavi, mor ya da tema rengi.
+- **Yapılacaklar:** Görev ekle, işaretle, düzenle, sil. Tamamlananları tek tıkla temizle.
+- **Döviz, altın ve kripto:** Dolar, Euro, gram altın, Bitcoin, Ethereum ve daha fazlası; günlük değişimle. API anahtarı gerekmez.
+- **Fotoğraf çerçevesi:** Seçtiğin klasördeki fotoğrafları sırayla gösterir.
+- **GitHub:** Açık pull request'lerin ve CI durumları (gh CLI ile).
 
 Widget'ları sürükleyerek taşıyabilir, başka bir ekrana götürebilir ve yerlerine kilitleyebilirsin. Konumları otomatik kaydedilir.
 
-### Evcil hayvan ve arazi
+### Evcil hayvan
 
-Çubuğun yanında dolaşan piksel sanatı bir karakter: **Köpek, Tilki, Kirpi, Bukalemun** veya **Ateş böceği**. Fareyle tutup taşıyabilir, sağ tıklayıp kapatabilirsin.
+Çubuğun yanında dolaşan pixel art bir karakter. Yürür, koşar, zıplar, uyur; fareyle tutup taşıyabilir, üzerine gelip sevebilirsin. Ayarlar → Evcil hayvan → **Karakter**'den seç.
 
-Çubuğun iki yanı **çimenli bir arazi** ya da **tünelli bir yol** olabilir. Yolda zaman zaman bir araba geçer, bir tünele girip diğerinden çıkar. Gece ve karlı havalarda görünüm değişir.
+<img src="docs/images/pets-walk.gif" alt="Petler yürürken">
+
+**Bukalemun, Ateş böceği, Tilki, Kirpi, Köpek, Turuncu kedi, Siyah kedi, Gri kedi** ve **Kurt köpeği**. Her birinin kendine özgü bir hareketi var: tilki atılır, kirpi top olup yuvarlanır, kedi gerinir, kurt köpeği uluyor…
+
+<img src="docs/images/pets-special.gif" alt="Petlerin özel hareketleri">
+
+İlk beş pet için klasik çizimler de duruyor: Ayarlar → Evcil hayvan → **Pixel art** kapalı.
+
+### Manzaralar
+
+Çubuğun iki yanı pixel art bir manzara olabilir; pet onun zemininde yürür. Ayarlar → Evcil hayvan → **Arazi türü**'nden seç. Her manzarada önemli yerler (camiler, Dünya, kulübe…) yalnızca **bir kez** görünür ve çubuğun iki yanına paylaştırılır; hiçbir şey tekrar etmez. Gece 20:00–06:00 arası, gece hâli olan manzaralar kendiliğinden değişir.
+
+Aşağıdaki görsellerde üst satır çubuğun **solu**, alt satır **sağıdır**.
+
+**İstanbul** — vapur, Ayasofya, Sultanahmet, Galata Kulesi, Boğaz Köprüsü
+
+<img src="docs/images/scene-istanbul.png" alt="İstanbul manzarası">
+
+<details><summary>Gece</summary>
+
+<img src="docs/images/scene-istanbul-night.png" alt="İstanbul gece">
+</details>
+
+**Antalya** — gulet, Düden Şelalesi, Kaleiçi ve Yivli Minare, Hadrian Kapısı, Konyaaltı
+
+<img src="docs/images/scene-antalya.png" alt="Antalya manzarası">
+
+<details><summary>Gece</summary>
+
+<img src="docs/images/scene-antalya-night.png" alt="Antalya gece">
+</details>
+
+**Dağlar** — çam ormanı ve geyikler, karlı zirve ve göl, şelale, kütük kulübe, çayırlar
+
+<img src="docs/images/scene-mountains.png" alt="Dağ manzarası">
+
+<details><summary>Gece</summary>
+
+<img src="docs/images/scene-mountains-night.png" alt="Dağlar gece">
+</details>
+
+**Karlı köy** — fenerli orman, ışıklı kulübe, donmuş gölet, köy meydanı, şapel
+
+<img src="docs/images/scene-winter_cozy.png" alt="Karlı köy manzarası">
+
+**Ay** — kraterler, doğan Dünya, ay üssü, iniş aracı ve gezici
+
+<img src="docs/images/scene-moon.png" alt="Ay manzarası">
+
+**Uzay** — bulutsu, halkalı gezegen, uzay istasyonu, asteroit kuşağı, galaksi
+
+<img src="docs/images/scene-space.png" alt="Uzay manzarası">
+
+**Stadyum** — dolu tribünler, iki kale, gece maçında projektörler
+
+<img src="docs/images/scene-stadium.png" alt="Stadyum manzarası">
+
+<details><summary>Gece</summary>
+
+<img src="docs/images/scene-stadium-night.png" alt="Stadyum gece">
+</details>
+
+**Yol** — tünelli yol; zaman zaman bir araba geçer, bir tünele girip diğerinden çıkar.
+
+#### Sahneler
+
+Bazı manzaralarda arada bir kısa bir sahne oynar (işlemciyi yormamak için 25–70 saniyede bir):
+
+- **Ay ve Uzay — uzay savaşı:** Bir savaşçı gelir, karşıdan uzaylılar yaklaşır, savaşçı lazerle ateş eder, vurulanlar patlar.
+
+  <img src="docs/images/show-space.gif" alt="Uzay savaşı karakterleri">
+
+- **Stadyum — gol atağı:** Bir oyuncu topu sürer, rakip peşine düşer, kaleci atlar ama yetişemez; gol olunca konfeti patlar.
+
+  <img src="docs/images/show-football.gif" alt="Futbol karakterleri">
+
+Sahneleri manzaranın altındaki **Uzay savaşı / Futbol maçı** seçeneğinden kapatabilirsin.
 
 ### Temalar
 
@@ -104,16 +185,24 @@ Widget'ları sürükleyerek taşıyabilir, başka bir ekrana götürebilir ve ye
 
 Taskbaroque, terminalde ve kod editöründe çalışan araçlardan bildirim alıp çentikte gösterebilir. Bildirime tıkladığında ilgili pencere öne gelir.
 
-**Claude Code:** `%USERPROFILE%\.claude\settings.json` dosyasına şu hook'ları ekle. `<kullanıcı>` yerine kendi kullanıcı adını yaz:
+**Claude Code:** Taskbaroque açılırken Claude Code hook'larını `%USERPROFILE%\.claude\settings.json` dosyasına kendisi ekler. Önce dosyanın yedeğini alır, başka araçların hook'larına dokunmaz. Çentik çalışan, onay bekleyen ve biten oturumları gösterir; terminali (Warp dahil) öne getirmek için oturuma tıkla. Claude Code ayarları oturum açılırken okuduğundan, açık oturumları bir kez yeniden başlat.
+
+**Sesler:** Ayarlar → **Bildirimler**'den ses türünü seç: Melodi, Yumuşak, Zil, Retro (8-bit), Windows sesleri ya da kendi `.wav` dosyan. Ses seviyesini ayarla; görev bitince, onay beklerken ve hata olunca çalıp çalmayacağını ayrı ayrı seç.
+
+Elle eklemek istersen hook'lar şöyle görünür (`<kullanıcı>` yerine kendi kullanıcı adını yaz):
 
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "PreToolUse":       [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "Notification":     [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "Stop":             [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }],
-    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook" }] }]
+    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PreToolUse":         [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "PermissionRequest":  [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "Notification":       [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "StopFailure":        [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }],
+    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<kullanıcı>/AppData/Local/Programs/Taskbaroque/taskbaroque.exe\" --hook", "timeout": 10 }] }]
   }
 }
 ```

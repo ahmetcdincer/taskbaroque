@@ -128,6 +128,7 @@ pub struct Surface {
     brush: ID2D1SolidColorBrush,
     font: Vec<u16>,
     formats: RefCell<HashMap<FormatKey, IDWriteTextFormat>>,
+    wraps: RefCell<HashMap<(u32, i32), IDWriteTextFormat>>,
 }
 
 impl Surface {
@@ -163,6 +164,7 @@ impl Surface {
                 brush,
                 font: wide(font),
                 formats: RefCell::new(HashMap::new()),
+                wraps: RefCell::new(HashMap::new()),
             })
         }
     }
@@ -452,6 +454,74 @@ impl Surface {
                 DWRITE_MEASURING_MODE_NATURAL,
             )
         }
+    }
+
+    /// Satır kaydıran, üstten hizalı metin biçimi (notlar ve listeler için).
+    fn wrap_format(&self, size: f32, weight: i32) -> Option<IDWriteTextFormat> {
+        let key = ((size * 10.0) as u32, weight);
+        if let Some(f) = self.wraps.borrow().get(&key) {
+            return Some(f.clone());
+        }
+        let fmt = with_f(|f| unsafe {
+            let fmt = f
+                .dw
+                .CreateTextFormat(PCWSTR(self.font.as_ptr()), None, DWRITE_FONT_WEIGHT(weight), DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("tr-TR"))
+                .ok()?;
+            let _ = fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            let _ = fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            let _ = fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            Some(fmt)
+        })?;
+        self.wraps.borrow_mut().insert(key, fmt.clone());
+        Some(fmt)
+    }
+
+    fn wrap_layout(&self, s: &str, w: f32, size: f32, weight: i32) -> Option<IDWriteTextLayout> {
+        let fmt = self.wrap_format(size, weight)?;
+        let text: Vec<u16> = s.encode_utf16().collect();
+        with_f(|f| unsafe { f.dw.CreateTextLayout(&text, &fmt, w.max(1.0), 100_000.0).ok() })
+    }
+
+    /// Kaydırılmış metni `r` içine çizer; `r` dışı kırpılır. `dy` yukarı kaydırma (scroll).
+    pub fn text_wrapped(&self, s: &str, r: Rect, size: f32, weight: i32, c: Color, dy: f32) {
+        let Some(layout) = self.wrap_layout(s, r.w, size, weight) else { return };
+        self.set_color(c);
+        self.push_clip(r);
+        unsafe { self.rt.DrawTextLayout(pt(r.x, r.y - dy), &layout, &self.brush, D2D1_DRAW_TEXT_OPTIONS_NONE) };
+        self.pop_clip();
+    }
+
+    /// Kaydırılmış metnin toplam yüksekliği.
+    pub fn text_height(&self, s: &str, w: f32, size: f32, weight: i32) -> f32 {
+        let Some(layout) = self.wrap_layout(s, w, size, weight) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { layout.GetMetrics(&mut m).map(|_| m.height).unwrap_or(0.0) }
+    }
+
+    /// UTF-16 konumundaki imlecin (x, y, satır yüksekliği) değeri, metnin sol üstüne göre.
+    pub fn caret_xy(&self, s: &str, w: f32, size: f32, weight: i32, pos: u32) -> (f32, f32, f32) {
+        let Some(layout) = self.wrap_layout(s, w, size, weight) else { return (0.0, 0.0, size * 1.3) };
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        let mut m = DWRITE_HIT_TEST_METRICS::default();
+        unsafe {
+            if layout.HitTestTextPosition(pos, BOOL(0), &mut x, &mut y, &mut m).is_err() {
+                return (0.0, 0.0, size * 1.3);
+            }
+        }
+        (x, y, if m.height > 0.0 { m.height } else { size * 1.3 })
+    }
+
+    /// Metnin sol üstüne göre (x, y) noktasındaki UTF-16 konumu.
+    pub fn text_hit(&self, s: &str, w: f32, size: f32, weight: i32, x: f32, y: f32) -> u32 {
+        let Some(layout) = self.wrap_layout(s, w, size, weight) else { return 0 };
+        let (mut trailing, mut inside) = (BOOL(0), BOOL(0));
+        let mut m = DWRITE_HIT_TEST_METRICS::default();
+        unsafe {
+            if layout.HitTestPoint(x, y, &mut trailing, &mut inside, &mut m).is_err() {
+                return 0;
+            }
+        }
+        m.textPosition + if trailing.as_bool() { m.length } else { 0 }
     }
 
     pub fn measure(&self, s: &str, size: f32, weight: i32) -> f32 {

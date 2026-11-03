@@ -23,8 +23,32 @@ pub struct Stand {
     pub frame: u32,
 }
 
-pub fn pet(kind: &str) -> Option<(&'static [u8], PetSheet)> {
-    let (png, json): (&[u8], &str) = match kind {
+/// Pixel art sürüm (varsa). Kediler ve kurt köpeği yalnızca pixel olarak var.
+fn pet_pixel(kind: &str) -> Option<(&'static [u8], &'static str)> {
+    Some(match kind {
+        "chameleon" => (include_bytes!("../assets/pets/pixel/chameleon.png"), include_str!("../assets/pets/pixel/chameleon.json")),
+        "firefly" => (include_bytes!("../assets/pets/pixel/firefly.png"), include_str!("../assets/pets/pixel/firefly.json")),
+        "fox" => (include_bytes!("../assets/pets/pixel/fox.png"), include_str!("../assets/pets/pixel/fox.json")),
+        "hedgehog" => (include_bytes!("../assets/pets/pixel/hedgehog.png"), include_str!("../assets/pets/pixel/hedgehog.json")),
+        "puppy" => (include_bytes!("../assets/pets/pixel/puppy.png"), include_str!("../assets/pets/pixel/puppy.json")),
+        "cat_orange" => (include_bytes!("../assets/pets/pixel/cat_orange.png"), include_str!("../assets/pets/pixel/cat_orange.json")),
+        "cat_black" => (include_bytes!("../assets/pets/pixel/cat_black.png"), include_str!("../assets/pets/pixel/cat_black.json")),
+        "cat_grey" => (include_bytes!("../assets/pets/pixel/cat_grey.png"), include_str!("../assets/pets/pixel/cat_grey.json")),
+        "wolfdog" => (include_bytes!("../assets/pets/pixel/wolfdog.png"), include_str!("../assets/pets/pixel/wolfdog.json")),
+        _ => return None,
+    })
+}
+
+pub fn pet(kind: &str, pixel: bool) -> Option<(&'static [u8], PetSheet)> {
+    if let Some((png, json)) = pet_pixel(kind).filter(|_| pixel || classic(kind).is_none()) {
+        return Some((png, serde_json::from_str(json).ok()?));
+    }
+    let (png, json) = classic(kind)?;
+    Some((png, serde_json::from_str(json).ok()?))
+}
+
+fn classic(kind: &str) -> Option<(&'static [u8], &'static str)> {
+    let (png, json): (&'static [u8], &'static str) = match kind {
         "chameleon" => (include_bytes!("../assets/pets/chameleon.png"), include_str!("../assets/pets/chameleon.json")),
         "firefly" => (include_bytes!("../assets/pets/firefly.png"), include_str!("../assets/pets/firefly.json")),
         "fox" => (include_bytes!("../assets/pets/fox.png"), include_str!("../assets/pets/fox.json")),
@@ -32,7 +56,7 @@ pub fn pet(kind: &str) -> Option<(&'static [u8], PetSheet)> {
         "puppy" => (include_bytes!("../assets/pets/puppy.png"), include_str!("../assets/pets/puppy.json")),
         _ => return None,
     };
-    Some((png, serde_json::from_str(json).ok()?))
+    Some((png, json))
 }
 
 #[derive(Deserialize, Clone, Copy, Debug)]
@@ -110,11 +134,13 @@ pub const NIGHT_FIRST_USABLE: usize = 3;
 mod tests {
     #[test]
     fn embedded_assets_parse() {
-        for k in ["chameleon", "firefly", "fox", "hedgehog", "puppy"] {
-            let (png, sheet) = super::pet(k).unwrap();
-            assert!(png.len() > 1000);
-            for a in ["idle", "walk", "run", "sleep", "jump", "happy", "dangle", "special"] {
-                assert!(sheet.anims.contains_key(a), "{k} {a}");
+        for pixel in [false, true] {
+            for (k, _) in crate::config::PET_KINDS {
+                let (png, sheet) = super::pet(k, pixel).unwrap();
+                assert!(png.len() > 1000);
+                for (a, n) in [("idle", 4), ("walk", 8), ("run", 6), ("sleep", 4), ("jump", 4), ("happy", 4), ("dangle", 4), ("special", 6)] {
+                    assert_eq!(sheet.anims.get(a).map(|x| x.frames), Some(n), "{k} {a}");
+                }
             }
         }
         let g = super::ground_meta().unwrap();

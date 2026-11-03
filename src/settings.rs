@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TR
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::Ctx;
-use crate::config::{self, Config, Palette, BAR_STYLES, NOTCH_MODES, PET_KINDS, PRESET_KEYS, WIDGET_KINDS};
+use crate::config::{self, Config, Palette, BAR_STYLES, NOTCH_EDGES, NOTCH_MODES, PET_KINDS, PRESET_KEYS, WIDGET_KINDS};
 use crate::gfx::{Align, Color, Rect, Surface};
 use crate::i18n::{self, tr, LANGUAGES};
 use crate::menu::{self, Entry};
@@ -23,12 +23,13 @@ const SIDE: f32 = 210.0;
 const ROW: f32 = 60.0;
 const WM_MOUSELEAVE_: u32 = 0x02A3;
 
-const SECTIONS: [(char, &str, &str); 6] = [
+const SECTIONS: [(char, &str, &str); 7] = [
     ('\u{E790}', "Görünüm", "Appearance"),
     ('\u{E8A9}', "Görev çubuğu", "Taskbar"),
     ('\u{E8A0}', "Çentik", "Notch"),
     ('\u{E76E}', "Evcil hayvan", "Pet"),
     ('\u{ECA5}', "Widget'lar", "Widgets"),
+    ('\u{EA8F}', "Bildirimler", "Notifications"),
     ('\u{E713}', "Genel", "General"),
 ];
 
@@ -63,17 +64,29 @@ enum Id {
     ShowTray,
     HiddenApps,
     NotchMode,
+    NotchEdge,
+    NotchLock,
     NotchMonitor,
     PetEnabled,
     PetKind,
+    PetPixel,
     PetSize,
     Terrain,
     TerrainStyle,
     Car,
+    Show,
     Widget(usize),
     AddWidget,
     Lock,
     Autostart,
+    SoundOn,
+    SoundTheme,
+    SoundVolume,
+    SoundFile,
+    SoundTest,
+    SoundDone,
+    SoundAttention,
+    SoundError,
     OpenConfig,
     Reload,
     Exit,
@@ -230,6 +243,8 @@ impl Settings {
             ],
             2 => vec![
                 row(Id::NotchMode, l("Görünürlük", "Visibility"), l("Çentik ne zaman görünsün", "When the notch is shown"), Ctl::Choice(label_of(&NOTCH_MODES, &cfg.notch.mode))),
+                row(Id::NotchEdge, l("Kenar", "Edge"), l("Üstte yatay, yanlarda dikey durur", "Horizontal on top, vertical on the sides"), Ctl::Choice(label_of(&NOTCH_EDGES, &cfg.notch.edge))),
+                row(Id::NotchLock, l("Konumu kilitle", "Lock position"), l("Açıkken boş bir yerinden tutup sürükleyerek taşıyabilirsin", "When unlocked, drag it by an empty spot to move it"), Ctl::Toggle(cfg.notch.locked)),
                 row(Id::NotchMonitor, l("Ekran", "Screen"), l("Çentiğin bulunduğu ekran", "Screen the notch is on"), Ctl::Choice(format!("{} {}", l("Ekran", "Screen"), cfg.notch.monitor))),
                 row(
                     Id::IcsAdd,
@@ -249,17 +264,26 @@ impl Settings {
                 let mut v = vec![
                     row(Id::PetEnabled, l("Evcil hayvan", "Pet"), l("Görev çubuğunda dolaşan karakter", "Character that roams the taskbar"), Ctl::Toggle(cfg.pet.enabled)),
                     row(Id::PetKind, l("Karakter", "Character"), "", Ctl::Choice(label_of(&PET_KINDS, &cfg.pet.kind))),
+                    row(Id::PetPixel, l("Pixel art", "Pixel art"), l("Kapalıyken klasik çizimler (kediler ve kurt köpeği hep pixel)", "Off: classic drawings (cats and wolfdog are always pixel)"), Ctl::Toggle(cfg.pet.pixel)),
                     row(Id::PetSize, l("Boyut", "Size"), "", Ctl::Stepper(format!("{:.1}", cfg.pet.size))),
                     row(Id::Terrain, l("Çubuğun yanlarında arazi", "Ground beside the bar"), l("Pet'in dolaştığı alan", "Area where the pet walks"), Ctl::Toggle(b.terrain)),
                     row(
                         Id::TerrainStyle,
                         l("Arazi türü", "Ground style"),
-                        l("Tünelli yol ya da çimenli arazi", "Road with tunnels or grassy ground"),
-                        Ctl::Choice(if b.terrain_style == "grass" { l("Çimen", "Grass") } else { l("Yol", "Road") }.into()),
+                        l("Tünelli yol ya da pixel manzaralar", "Road with tunnels or pixel scenes"),
+                        Ctl::Choice(terrain_label(&b.terrain_style)),
                     ),
                 ];
-                if b.terrain_style != "grass" {
+                if b.terrain_style == "road" {
                     v.push(row(Id::Car, l("Araba", "Car"), l("Yolda dolaşıp tünellerden geçer", "Drives along the road through the tunnels"), Ctl::Toggle(b.car)));
+                }
+                if matches!(b.terrain_style.as_str(), "moon" | "space" | "stadium") {
+                    let (name, desc) = if b.terrain_style == "stadium" {
+                        (l("Futbol maçı", "Football match"), l("Ara sıra bir gol atağı oynanır", "Now and then a goal attack plays out"))
+                    } else {
+                        (l("Uzay savaşı", "Space fight"), l("Ara sıra savaşçı uzaylılara ateş eder", "Now and then a warrior fights off aliens"))
+                    };
+                    v.push(row(Id::Show, name, desc, Ctl::Toggle(b.show)));
                 }
                 v
             }
@@ -275,6 +299,27 @@ impl Settings {
                     .collect();
                 v.push(row(Id::AddWidget, l("Widget ekle", "Add widget"), l("Masaüstüne yeni bir widget koy", "Put a new widget on the desktop"), Ctl::Choice(l("Seç", "Choose").into())));
                 v.push(row(Id::Lock, l("Widget'ları kilitle", "Lock widgets"), l("Sürüklenerek taşınamasınlar", "Prevent moving them by dragging"), Ctl::Toggle(cfg.general.locked)));
+                v
+            }
+            5 => {
+                let sc = &cfg.sound;
+                let theme = crate::sound::THEMES.iter().find(|(k, _)| *k == sc.theme).map_or(sc.theme.as_str(), |(_, v)| *v);
+                let mut v = vec![
+                    row(Id::SoundOn, l("Bildirim sesi", "Notification sound"), l("Bildirim gelince ses çal", "Play a sound when a notification arrives"), Ctl::Toggle(sc.enabled)),
+                    row(Id::SoundTheme, l("Ses türü", "Sound style"), l("Seçince bir örnek çalar", "Plays a sample when chosen"), Ctl::Choice(tr(theme).to_string())),
+                ];
+                if !matches!(sc.theme.as_str(), "windows" | "custom") {
+                    v.push(row(Id::SoundVolume, l("Ses seviyesi", "Volume"), l("Uygulamanın kendi sesleri için", "For the app's own sounds"), Ctl::Stepper(format!("%{:.0}", sc.volume * 100.0))));
+                }
+                if sc.theme == "custom" {
+                    let name = std::path::Path::new(&sc.file).file_name().map(|n| n.to_string_lossy().into_owned());
+                    let desc = name.unwrap_or_else(|| l("Henüz dosya seçilmedi (.wav)", "No file chosen yet (.wav)").to_string());
+                    v.push(row(Id::SoundFile, l("Ses dosyası", "Sound file"), &desc, Ctl::Button(l("Dosya seç", "Choose file").into(), false)));
+                }
+                v.push(row(Id::SoundTest, l("Sesi dene", "Try the sound"), l("Bitti, onay ve hata sesleri sırayla", "Done, attention and error sounds in turn"), Ctl::Button(l("Dinle", "Listen").into(), false)));
+                v.push(row(Id::SoundDone, l("Görev bitince", "When a task finishes"), l("Claude işini bitirdiğinde", "When Claude finishes its work"), Ctl::Toggle(sc.done)));
+                v.push(row(Id::SoundAttention, l("Onay ya da yanıt beklerken", "When waiting for approval or an answer"), l("Claude senden bir şey istediğinde", "When Claude needs something from you"), Ctl::Toggle(sc.attention)));
+                v.push(row(Id::SoundError, l("Hata olunca", "On errors"), l("Claude bir hatayla durduğunda", "When Claude stops with an error"), Ctl::Toggle(sc.error)));
                 v
             }
             _ => vec![
@@ -483,6 +528,11 @@ impl Settings {
             Hit::Step(id, d) => match id {
                 Id::IconSize => config::set_value("bar", "icon_size", (b.icon_size as i64 + 2 * d as i64).clamp(16, 32)),
                 Id::PetSize => config::set_value("pet", "size", ((cfg.pet.size + 0.1 * d as f32).clamp(0.5, 2.0) * 10.0).round() as f64 / 10.0),
+                Id::SoundVolume => {
+                    let v = ((cfg.sound.volume + 0.1 * d as f32).clamp(0.1, 1.0) * 10.0).round() / 10.0;
+                    config::set_value("sound", "volume", v as f64);
+                    crate::sound::play(&config::SoundCfg { volume: v, ..cfg.sound.clone() }, "done");
+                }
                 _ => return None,
             },
             Hit::Row(id) => match id {
@@ -517,11 +567,18 @@ impl Settings {
                     let opts = NOTCH_MODES.iter().map(|(k, v)| (tr(v).to_string(), cfg.notch.mode == *k)).collect();
                     config::set_notch_mode(NOTCH_MODES[self.choose(&ctx.pal, opts)?].0);
                 }
+                Id::NotchEdge => {
+                    let opts = NOTCH_EDGES.iter().map(|(k, v)| (tr(v).to_string(), cfg.notch.edge == *k)).collect();
+                    let edge = NOTCH_EDGES[self.choose(&ctx.pal, opts)?].0;
+                    config::set_notch_place(edge, 0.5, cfg.notch.monitor);
+                }
+                Id::NotchLock => config::set_value("notch", "locked", !cfg.notch.locked),
                 Id::NotchMonitor => {
                     let opts = (1..=self.monitors.max(1)).map(|i| (format!("{} {i}", l("Ekran", "Screen")), cfg.notch.monitor == i)).collect();
                     config::set_value("notch", "monitor", self.choose(&ctx.pal, opts)? as i64 + 1);
                 }
                 Id::PetEnabled => config::set_pet(if cfg.pet.enabled { None } else { Some(cfg.pet.kind.as_str()) }),
+                Id::PetPixel => config::set_value("pet", "pixel", !cfg.pet.pixel),
                 Id::PetKind => {
                     let opts = PET_KINDS.iter().map(|(k, v)| (tr(v).to_string(), cfg.pet.kind == *k)).collect();
                     config::set_pet(Some(PET_KINDS[self.choose(&ctx.pal, opts)?].0));
@@ -545,6 +602,42 @@ impl Settings {
                 }
                 Id::IcsClear => config::clear_ics(),
                 Id::Github => config::set_value("github", "enabled", !cfg.github.enabled),
+                Id::SoundOn => config::set_value("sound", "enabled", !cfg.sound.enabled),
+                Id::SoundDone => config::set_value("sound", "done", !cfg.sound.done),
+                Id::SoundAttention => config::set_value("sound", "attention", !cfg.sound.attention),
+                Id::SoundError => config::set_value("sound", "error", !cfg.sound.error),
+                Id::SoundTheme => {
+                    let themes = crate::sound::THEMES;
+                    let opts = themes.iter().map(|(k, v)| (tr(v).to_string(), cfg.sound.theme == *k)).collect();
+                    let key = themes[self.choose(&ctx.pal, opts)?].0;
+                    let mut sc = cfg.sound.clone();
+                    sc.theme = key.to_string();
+                    if key == "custom" && !std::path::Path::new(&sc.file).is_file() {
+                        if let Some(f) = pick_wav(self.hwnd) {
+                            sc.file = f.to_string_lossy().into_owned();
+                            config::set_value("sound", "file", sc.file.as_str());
+                        }
+                    }
+                    config::set_value("sound", "theme", key);
+                    crate::sound::play(&sc, "done");
+                }
+                Id::SoundFile => {
+                    let f = pick_wav(self.hwnd)?;
+                    let path = f.to_string_lossy().into_owned();
+                    config::set_value("sound", "file", path.as_str());
+                    crate::sound::play(&config::SoundCfg { file: path, theme: "custom".into(), ..cfg.sound.clone() }, "done");
+                }
+                Id::SoundTest => {
+                    // Üç sesi aralıklarla çal (PlaySound aynı anda tek ses çalar)
+                    let sc = cfg.sound.clone();
+                    std::thread::spawn(move || {
+                        for kind in ["done", "attention", "error"] {
+                            crate::sound::play(&sc, kind);
+                            std::thread::sleep(std::time::Duration::from_millis(1300));
+                        }
+                    });
+                    return None;
+                }
                 Id::City => {
                     if self.edit.is_none() && !self.searching {
                         self.edit = Some(String::new());
@@ -552,11 +645,12 @@ impl Settings {
                     return None;
                 }
                 Id::TerrainStyle => {
-                    let grass = b.terrain_style == "grass";
-                    let opts = vec![(l("Yol", "Road").to_string(), !grass), (l("Çimen", "Grass").to_string(), grass)];
-                    config::set_value("bar", "terrain_style", ["road", "grass"][self.choose(&ctx.pal, opts)?]);
+                    let keys = terrain_keys();
+                    let opts = keys.iter().map(|k| (terrain_label(k), b.terrain_style == *k)).collect();
+                    config::set_value("bar", "terrain_style", keys[self.choose(&ctx.pal, opts)?]);
                 }
                 Id::Car => flag("car", !b.car),
+                Id::Show => flag("show", !b.show),
                 Id::StartIcon => config::set_start_icon(Some(&pick_image(self.hwnd)?)),
                 Id::ImportPins => {
                     if crate::bar::import_windows_pins(&b.pinned, true).is_none() {
@@ -586,7 +680,7 @@ impl Settings {
                 }
                 Id::Reload => {}
                 Id::Exit => return Some(SettingsOut::Exit),
-                Id::IconSize | Id::PetSize => return None,
+                Id::IconSize | Id::PetSize | Id::SoundVolume => return None,
             },
         }
         Some(SettingsOut::Reload)
@@ -695,6 +789,43 @@ pub(crate) fn base_color(p: &Palette) -> Color {
     let bg = p.bg;
     let mix = |a: f32, b: f32| a * bg.a * 0.35 + b * (1.0 - bg.a * 0.35);
     Color { r: mix(bg.r, base.r), g: mix(bg.g, base.g), b: mix(bg.b, base.b), a: 1.0 }
+}
+
+fn terrain_keys() -> Vec<&'static str> {
+    let mut v = vec!["road"];
+    v.extend(crate::scene::SCENES.iter().map(|(k, _)| *k));
+    v
+}
+
+fn terrain_label(key: &str) -> String {
+    match key {
+        "road" => l("Yol", "Road").into(),
+        k => crate::scene::SCENES.iter().find(|(s, _)| *s == k).map_or_else(|| l("Yol", "Road").into(), |(_, n)| tr(n).to_string()),
+    }
+}
+
+fn pick_wav(owner: HWND) -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_FILEMUSTEXIST, SIGDN_FILESYSPATH};
+    unsafe {
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let name = windows::core::HSTRING::from(l("Ses dosyaları (.wav)", "Sound files (.wav)"));
+        let filter = [COMDLG_FILTERSPEC { pszName: windows::core::PCWSTR(name.as_ptr()), pszSpec: w!("*.wav") }];
+        dlg.SetFileTypes(&filter).ok()?;
+        let title = windows::core::HSTRING::from(l("Bildirim sesi seç", "Choose a notification sound"));
+        let _ = dlg.SetTitle(&title);
+        let _ = dlg.SetOptions(dlg.GetOptions().ok()? | FOS_FILEMUSTEXIST);
+        if let Ok(media) = windows::Win32::UI::Shell::SHCreateItemFromParsingName::<_, _, windows::Win32::UI::Shell::IShellItem>(&windows::core::HSTRING::from("C:\\Windows\\Media"), None) {
+            let _ = dlg.SetFolder(&media);
+        }
+        dlg.Show(owner).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as _));
+        path.map(std::path::PathBuf::from)
+    }
 }
 
 fn pick_image(owner: HWND) -> Option<std::path::PathBuf> {
