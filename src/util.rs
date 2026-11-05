@@ -231,3 +231,58 @@ pub fn file_description(path: &str) -> Option<String> {
         (!d.is_empty()).then_some(d)
     }
 }
+
+fn class_of(h: HWND) -> String {
+    let mut buf = [0u16; 64];
+    let n = unsafe { GetClassNameW(h, &mut buf) };
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+fn covers(h: HWND, mon: &RECT) -> bool {
+    let mut r = RECT::default();
+    let ok = unsafe { GetWindowRect(h, &mut r).is_ok() };
+    ok && r.left <= mon.left && r.top <= mon.top && r.right >= mon.right && r.bottom >= mon.bottom
+}
+
+fn exact(h: HWND, mon: &RECT) -> bool {
+    let mut r = RECT::default();
+    let ok = unsafe { GetWindowRect(h, &mut r).is_ok() };
+    ok && (r.left - mon.left).abs() <= 1 && (r.top - mon.top).abs() <= 1 && (r.right - mon.right).abs() <= 1 && (r.bottom - mon.bottom).abs() <= 1
+}
+
+/// Bu ekranda tam ekran bir pencere (video, oyun, sunum) var mı?
+///
+/// Önce öndeki pencereye bakılır. Öndeki pencere başka bir ekrandaysa (kullanıcı diğer ekranda bir
+/// şeye tıkladıysa) bu ekrandaki en üstteki gerçek pencereye bakılır; video orada tam ekran açık
+/// kalmaya devam ettiği sürece çubuk da gizli kalır.
+pub fn fullscreen_on(hmon: windows::Win32::Graphics::Gdi::HMONITOR, mon: &RECT) -> bool {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
+    unsafe {
+        let desktop = |h: HWND| matches!(class_of(h).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd");
+        let fg = GetForegroundWindow();
+        if !fg.is_invalid() && MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) == hmon {
+            return covers(fg, mon) && !desktop(fg);
+        }
+        let me = GetCurrentProcessId();
+        let mut h = GetTopWindow(None).unwrap_or_default();
+        while !h.is_invalid() {
+            let next = GetWindow(h, GW_HWNDNEXT).unwrap_or_default();
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, Some(&mut pid));
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
+            // Kendi pencerelerimiz, görünmeyenler, simge durumundakiler, bindirme/araç pencereleri sayılmaz
+            let overlay = ex & (WS_EX_TOOLWINDOW.0 | WS_EX_TRANSPARENT.0 | WS_EX_NOACTIVATE.0) != 0;
+            let mut cloaked = 0u32;
+            let _ = DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut cloaked as *mut _ as _, 4);
+            if pid != me && IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() && !overlay && cloaked == 0 && MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) == hmon {
+                // Bu ekrandaki en üstteki pencere: tam ekransa gizle. Tarayıcılar tam ekrana geçince de
+                // "büyütülmüş" işaretini korur; büyütülmüş normal pencere ise kenarlıkları yüzünden ekranın
+                // birkaç piksel dışına taşar. O yüzden büyütülmüşse ekranla birebir aynı olmalı.
+                return !desktop(h) && covers(h, mon) && (!IsZoomed(h).as_bool() || exact(h, mon));
+            }
+            h = next;
+        }
+        false
+    }
+}

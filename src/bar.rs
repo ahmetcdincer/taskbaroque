@@ -368,16 +368,7 @@ impl Bar {
 
     fn update_fullscreen(&mut self) {
         unsafe {
-            let fg = GetForegroundWindow();
-            let mut r = RECT::default();
-            let full = !fg.is_invalid()
-                && MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) == self.mon.hmon
-                && GetWindowRect(fg, &mut r).is_ok()
-                && r.left <= self.mon.rect.left
-                && r.top <= self.mon.rect.top
-                && r.right >= self.mon.rect.right
-                && r.bottom >= self.mon.rect.bottom
-                && !matches!(class_name(fg).as_str(), "Progman" | "WorkerW");
+            let full = util::fullscreen_on(self.mon.hmon, &self.mon.rect);
             let visible = IsWindowVisible(self.hwnd).as_bool();
             self.full = full;
             if full && visible {

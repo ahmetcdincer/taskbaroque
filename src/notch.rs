@@ -509,22 +509,7 @@ impl Notch {
     }
 
     fn fullscreen(&self) -> bool {
-        unsafe {
-            let fg = GetForegroundWindow();
-            let mut r = RECT::default();
-            if fg.is_invalid() || MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) != self.mon.hmon || GetWindowRect(fg, &mut r).is_err() {
-                return false;
-            }
-            let mut cls = [0u16; 32];
-            let n = GetClassNameW(fg, &mut cls);
-            let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
-            r.left <= self.mon.rect.left
-                && r.top <= self.mon.rect.top
-                && r.right >= self.mon.rect.right
-                && r.bottom >= self.mon.rect.bottom
-                && cls != "Progman"
-                && cls != "WorkerW"
-        }
+        util::fullscreen_on(self.mon.hmon, &self.mon.rect)
     }
 
     pub fn on_timer(&mut self, id: usize, ctx: &Ctx) {
